@@ -78,7 +78,9 @@ export async function buildRankPayload(user: User, game: Game) {
         ? `${lvl}#${placement} of ${total} cached (run /leaderboard for full)`
         : `${lvl}run /leaderboard for placement`;
   } else {
-    footer = "Valorant";
+    footer = rank.currentAct
+      ? `Valorant • Act ${rank.currentAct.toUpperCase()}`
+      : "Valorant";
   }
 
   const embed = new EmbedBuilder()

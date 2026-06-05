@@ -43,6 +43,7 @@ export interface GameRank {
   wins: number;
   losses: number;
   summonerLevel?: number; // LoL only
+  currentAct?: string; // Val only — e.g. "e10a4"
   fetchedAt: number;
 }
 
@@ -203,7 +204,8 @@ async function ddragonVersion(): Promise<string> {
 }
 
 function rankEmblemUrl(tier: string): string {
-  return `https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-emblem/emblem-${tier.toLowerCase()}.png`;
+  // OPGG's CDN hosts clean PNG emblems for all LoL tiers and is widely used.
+  return `https://opgg-static.akamaized.net/images/medals_new/${tier.toLowerCase()}.png`;
 }
 
 async function fetchLolRank(puuid: string): Promise<GameRank> {
@@ -242,9 +244,8 @@ async function fetchLolRank(puuid: string): Promise<GameRank> {
 interface HenrikMmrResponse {
   data: {
     current?: {
-      tier?: { name?: string };
+      tier?: { id?: number; name?: string };
       rr?: number;
-      images?: { small?: string; large?: string };
     };
     seasonal?: Array<{
       season?: { short?: string };
@@ -259,10 +260,49 @@ interface HenrikAccountResponse {
     puuid: string; // HenrikDev's dashed-UUID format
     name: string;
     tag: string;
-    // HenrikDev sometimes returns `card` as an object with small/large/wide
-    // URLs, other times as a bare card-ID string. Handle both.
-    card?: string | { small?: string };
+    card?: string; // player-card UUID; build the icon URL from it
   };
+}
+
+// Fetched once from valorant-api.com — maps the current season's tier id to
+// its small-icon URL. Cached for the process lifetime (changes only when
+// Riot releases a new ranked episode/act).
+let valTierIconsPromise: Promise<Map<number, string>> | null = null;
+
+interface ValApiCompetitiveTiersResponse {
+  data: Array<{
+    uuid: string;
+    tiers: Array<{
+      tier: number;
+      smallIcon: string | null;
+      largeIcon: string | null;
+    }>;
+  }>;
+}
+
+async function valTierIcons(): Promise<Map<number, string>> {
+  if (!valTierIconsPromise) {
+    valTierIconsPromise = (async () => {
+      const res = await fetch("https://valorant-api.com/v1/competitivetiers");
+      const json = (await res.json()) as ValApiCompetitiveTiersResponse;
+      const latest = json.data[json.data.length - 1];
+      const map = new Map<number, string>();
+      for (const t of latest?.tiers ?? []) {
+        const icon = t.smallIcon ?? t.largeIcon;
+        if (icon) map.set(t.tier, icon);
+      }
+      console.log(`[valapi] loaded ${map.size} tier icons`);
+      return map;
+    })().catch((err) => {
+      valTierIconsPromise = null;
+      throw err;
+    });
+  }
+  return valTierIconsPromise;
+}
+
+function playerCardIconUrl(cardUuid: string): string {
+  return `https://media.valorant-api.com/playercards/${cardUuid}/smallart.png`;
 }
 
 // Henrik returns tier names like "Diamond 2" or "Radiant" — split for sorting.
@@ -293,30 +333,51 @@ async function fetchValRank(puuid: string): Promise<GameRank> {
   );
   const henrikPuuid = accountRes.data.puuid;
 
-  const mmrRes = await henrikFetch<HenrikMmrResponse>(
-    `https://api.henrikdev.xyz/valorant/v3/by-puuid/mmr/${VAL_REGION}/${VAL_PLATFORM}/${encodeURIComponent(henrikPuuid)}`,
-  );
+  const [mmrRes, tierIcons] = await Promise.all([
+    henrikFetch<HenrikMmrResponse>(
+      `https://api.henrikdev.xyz/valorant/v3/by-puuid/mmr/${VAL_REGION}/${VAL_PLATFORM}/${encodeURIComponent(henrikPuuid)}`,
+    ),
+    valTierIcons().catch(() => new Map<number, string>()),
+  ]);
 
   const { tier, division } = parseValTier(mmrRes.data.current?.tier?.name);
-  const latestSeason = mmrRes.data.seasonal?.[0];
-  const wins = latestSeason?.wins ?? 0;
-  const games = latestSeason?.games ?? 0;
 
-  const card = accountRes.data.card;
-  const cardIcon =
-    typeof card === "object" && typeof card?.small === "string"
-      ? card.small
-      : null;
+  // Current act W/L: pick the seasonal entry with the highest episode/act
+  // (parsed from `short` like "e10a4"). Array order isn't guaranteed by
+  // HenrikDev, so we sort numerically instead of trusting [0] / [last].
+  const seasons = mmrRes.data.seasonal ?? [];
+  const seasonRank = (short: string | undefined): number => {
+    const m = short?.match(/^e(\d+)a(\d+)$/i);
+    if (!m) return -1;
+    return Number(m[1]) * 100 + Number(m[2]);
+  };
+  const current = seasons.reduce<(typeof seasons)[number] | undefined>(
+    (best, s) =>
+      !best || seasonRank(s.season?.short) > seasonRank(best.season?.short)
+        ? s
+        : best,
+    undefined,
+  );
+  console.log(
+    `[henrik] current act ${current?.season?.short ?? "?"}: ${current?.wins ?? 0}W/${(current?.games ?? 0) - (current?.wins ?? 0)}L`,
+  );
+  const wins = current?.wins ?? 0;
+  const games = current?.games ?? 0;
+
+  const tierId = mmrRes.data.current?.tier?.id;
+  const rankIcon = typeof tierId === "number" ? tierIcons.get(tierId) ?? null : null;
+  const cardUuid = accountRes.data.card;
+  const cardIcon = typeof cardUuid === "string" && cardUuid
+    ? playerCardIconUrl(cardUuid)
+    : null;
 
   return {
     game: "val",
     gameName,
     tagLine,
     profileIconUrl: cardIcon,
-    rankIconUrl:
-      mmrRes.data.current?.images?.small ??
-      mmrRes.data.current?.images?.large ??
-      null,
+    rankIconUrl: rankIcon,
+    currentAct: current?.season?.short ?? undefined,
     tier,
     division,
     points: mmrRes.data.current?.rr ?? 0,
@@ -342,11 +403,17 @@ function loadCacheFromDisk(): Promise<void> {
         const raw = await readFile(CACHE_FILE, "utf8");
         const data = JSON.parse(raw) as Record<string, GameRank>;
         for (const [key, rank] of Object.entries(data)) {
-          // Migrate legacy entries (puuid-only keys, no game field) to lol.
+          // Migrate legacy entries: puuid-only keys → lol-prefixed; old
+          // `leaguePoints` field → unified `points`; missing rankIconUrl filled.
           const normalizedKey = key.includes(":") ? key : `lol:${key}`;
-          const normalizedRank: GameRank = rank.game
-            ? rank
-            : { ...(rank as any), game: "lol" };
+          const legacy = rank as any;
+          const normalizedRank: GameRank = {
+            ...legacy,
+            game: legacy.game ?? "lol",
+            points: legacy.points ?? legacy.leaguePoints ?? 0,
+            rankIconUrl: legacy.rankIconUrl ?? null,
+            profileIconUrl: legacy.profileIconUrl ?? null,
+          };
           rankCache.set(normalizedKey, Promise.resolve(normalizedRank));
         }
         console.log(`[cache] loaded ${rankCache.size} entries from disk`);
@@ -499,10 +566,14 @@ export function profileUrl(r: GameRank): string {
 }
 
 /** Human-readable rank like "DIAMOND II 45 LP" or "Diamond 2 45 RR". */
+function titleCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
 export function formatRank(r: GameRank): string {
   if (!r.tier) return "Unranked";
   const unit = r.game === "lol" ? "LP" : "RR";
-  const parts = [r.tier];
+  const parts = [titleCase(r.tier)];
   if (r.division) parts.push(r.division);
   parts.push(`${r.points} ${unit}`);
   return parts.join(" ");
