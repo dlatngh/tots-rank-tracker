@@ -3,7 +3,7 @@ import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
 } from "discord.js";
-import { buildRankPayload, handleRankRefresh } from "../rank-render.ts";
+import { buildRankPayload, handleRankRefresh } from "../utility/rank-render";
 
 export const data = new SlashCommandBuilder()
   .setName("val")

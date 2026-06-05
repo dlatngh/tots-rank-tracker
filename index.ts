@@ -1,8 +1,8 @@
 import { Client, Events, GatewayIntentBits } from "discord.js";
-import { config } from "./src/config.ts";
+import { config } from "./src/utility/config.ts";
 import { commands } from "./src/commands/index.ts";
-import { registerCommands } from "./src/deploy-commands.ts";
-import { log, logError } from "./src/log.ts";
+import { registerCommands } from "./src/utility/deploy-commands.ts";
+import { log, logError } from "./src/utility/log.ts";
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -28,17 +28,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const label = sub
       ? `/${interaction.commandName} ${sub}`
       : `/${interaction.commandName}`;
-    log("cmd", `${label} by ${interaction.user.tag} in ${interaction.guild?.name ?? "DM"}`);
+    log(
+      "cmd",
+      `${label} by ${interaction.user.tag} in ${interaction.guild?.name ?? "DM"}`,
+    );
     try {
       await command.execute(interaction);
       log("cmd", `${label} done (${Date.now() - started}ms)`);
     } catch (err) {
       logError("cmd", `Error in /${interaction.commandName}:`, err);
-      const msg = "An error occurred while executing this command.";
+      const msg = "I cant do it my sodium is too high.";
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(msg).catch(() => {});
       } else {
-        await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+        await interaction
+          .reply({ content: msg, ephemeral: true })
+          .catch(() => {});
       }
     }
     return;
@@ -61,9 +66,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       logError("btn", `Error handling button ${interaction.customId}:`, err);
       const msg = "An error occurred while refreshing.";
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
+        await interaction
+          .followUp({ content: msg, ephemeral: true })
+          .catch(() => {});
       } else {
-        await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+        await interaction
+          .reply({ content: msg, ephemeral: true })
+          .catch(() => {});
       }
     }
   }

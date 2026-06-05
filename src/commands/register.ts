@@ -4,8 +4,8 @@ import {
   getAccount,
   invalidateRank,
   RiotApiError,
-} from "../riot.ts";
-import { setRegistration, type Division } from "../storage.ts";
+} from "../utility/riot.ts";
+import { setRegistration, type Division } from "../utility/storage.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("register")

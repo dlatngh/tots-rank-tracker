@@ -8,7 +8,7 @@ import {
   getRegistration,
   setDivision,
   type Division,
-} from "../storage.ts";
+} from "../utility/storage.ts";
 
 const DIVISION_CHOICES = [
   { name: "Upper", value: "upper" },
@@ -138,9 +138,7 @@ async function handleRemove(interaction: ChatInputCommandInteraction) {
       );
     }
   } catch {
-    await interaction.editReply(
-      `<@${user.id}> isn't registered yet.`,
-    );
+    await interaction.editReply(`<@${user.id}> isn't registered yet.`);
   }
 }
 
@@ -151,7 +149,9 @@ async function handleMove(interaction: ChatInputCommandInteraction) {
   const to = interaction.options.getString("to", true) as Division;
 
   if (from === to) {
-    await interaction.editReply(`\`from\` and \`to\` are the same — nothing to do.`);
+    await interaction.editReply(
+      `\`from\` and \`to\` are the same — nothing to do.`,
+    );
     return;
   }
 

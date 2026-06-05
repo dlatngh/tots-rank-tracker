@@ -3,8 +3,8 @@ import {
   MessageFlags,
   SlashCommandBuilder,
 } from "discord.js";
-import { getRank, type Game } from "../riot.ts";
-import { getAllRegistrations, updateRiotId } from "../storage.ts";
+import { getRank, type Game } from "../utility/riot.ts";
+import { getAllRegistrations, updateRiotId } from "../utility/storage.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("game")

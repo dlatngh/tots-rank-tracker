@@ -7,7 +7,7 @@
 // Otherwise they register globally (can take up to ~1 hour to propagate).
 
 import { REST, Routes } from "discord.js";
-import { commands } from "./commands/index.ts";
+import { commands } from "../commands/index.ts";
 import { config } from "./config.ts";
 
 const rest = new REST({ version: "10" }).setToken(config.discordToken);

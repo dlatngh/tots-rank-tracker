@@ -14,8 +14,8 @@ import {
   rankScore,
   type Game,
   type GameRank,
-} from "../riot.ts";
-import { getAllRegistrations, updateRiotId, type Division } from "../storage.ts";
+} from "../utility/riot.ts";
+import { getAllRegistrations, updateRiotId, type Division } from "../utility/storage.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("leaderboard")
