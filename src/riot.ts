@@ -1,6 +1,17 @@
-// Thin Riot API client: resolve a Riot ID to a PUUID, then fetch ranked entries.
+// Game-aware rank client. Resolves PUUIDs to ranked data for either
+// League of Legends (Riot's official API) or Valorant (HenrikDev's wrapper).
 
-import { config, RIOT_PLATFORM, RIOT_REGION } from "./config.ts";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import {
+  config,
+  RIOT_PLATFORM,
+  RIOT_REGION,
+  VAL_PLATFORM,
+  VAL_REGION,
+} from "./config.ts";
+
+export type Game = "lol" | "val";
 
 export class RiotApiError extends Error {
   constructor(
@@ -18,51 +29,115 @@ interface AccountDto {
   tagLine: string;
 }
 
-interface LeagueEntryDto {
-  queueType: string; // e.g. "RANKED_SOLO_5x5"
-  tier: string; // e.g. "GOLD"
-  rank: string; // e.g. "IV"
-  leaguePoints: number;
-  wins: number;
-  losses: number;
-}
-
-interface SummonerDto {
-  profileIconId: number;
-  summonerLevel: number;
-}
-
-export interface SoloDuoRank {
+// Unified rank shape used by both games. Fields not relevant to a given game
+// stay null/0 so embed renderers don't have to branch.
+export interface GameRank {
+  game: Game;
   gameName: string;
   tagLine: string;
-  summonerLevel: number;
-  profileIconUrl: string;
-  rankEmblemUrl: string | null; // null when unranked
+  profileIconUrl: string | null;
+  rankIconUrl: string | null; // emblem (LoL) or rank icon (Val); null if unranked
   tier: string | null; // null when unranked
   division: string | null;
-  leaguePoints: number;
+  points: number; // LoL: LP. Val: RR. Same sort semantics.
   wins: number;
   losses: number;
-  fetchedAt: number; // unix ms when this data was actually pulled from Riot
+  summonerLevel?: number; // LoL only
+  fetchedAt: number;
 }
 
-async function riotFetch<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
-    headers: { "X-Riot-Token": config.riotApiKey },
-  });
+// -- HTTP plumbing ----------------------------------------------------------
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new RiotApiError(
-      `Riot API ${res.status} for ${url}${body ? `: ${body}` : ""}`,
-      res.status,
-    );
+const MAX_RETRIES = 3;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const MAX_CONCURRENT = 8;
+let inFlight = 0;
+const waiters: Array<() => void> = [];
+
+async function acquireSlot(): Promise<void> {
+  if (inFlight < MAX_CONCURRENT) {
+    inFlight++;
+    return;
   }
-
-  return (await res.json()) as T;
+  await new Promise<void>((resolve) => waiters.push(resolve));
+  inFlight++;
 }
 
-/** Parse a "GameName#TAG" Riot ID into its parts. */
+function releaseSlot(): void {
+  inFlight--;
+  const next = waiters.shift();
+  if (next) next();
+}
+
+async function backoffFetch<T>(
+  url: string,
+  init: RequestInit,
+  logPrefix: string,
+): Promise<T> {
+  const path = url.replace(/^https?:\/\/[^/]+/, "");
+  await acquireSlot();
+  try {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const started = Date.now();
+      const res = await fetch(url, init);
+      const ms = Date.now() - started;
+      console.log(`[${logPrefix}] ${res.status} ${path} (${ms}ms)`);
+
+      if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+        const exp = 2 ** attempt * 1000;
+        const jitter = exp * (0.75 + Math.random() * 0.5);
+        const retryAfter = Number(res.headers.get("retry-after"));
+        const hint =
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
+        const waitMs = Math.max(jitter, hint);
+        console.log(
+          `[${logPrefix}] retrying ${path} in ${Math.round(waitMs)}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
+        );
+        await sleep(waitMs);
+        continue;
+      }
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        if (body) console.log(`[${logPrefix}] error body: ${body.slice(0, 500)}`);
+        throw new RiotApiError(
+          `${logPrefix} ${res.status} for ${url}${body ? `: ${body}` : ""}`,
+          res.status,
+        );
+      }
+
+      return (await res.json()) as T;
+    }
+    throw new RiotApiError(`${logPrefix} exhausted retries for ${url}`, 0);
+  } finally {
+    releaseSlot();
+  }
+}
+
+function riotFetch<T>(url: string): Promise<T> {
+  return backoffFetch<T>(
+    url,
+    { headers: { "X-Riot-Token": config.riotApiKey } },
+    "riot",
+  );
+}
+
+function henrikFetch<T>(url: string): Promise<T> {
+  return backoffFetch<T>(
+    url,
+    {
+      headers: {
+        Authorization: config.henrikApiKey,
+        Accept: "*/*",
+      },
+    },
+    "henrik",
+  );
+}
+
+// -- Riot account lookup ----------------------------------------------------
+
 export function parseRiotId(
   riotId: string,
 ): { gameName: string; tagLine: string } | null {
@@ -74,7 +149,6 @@ export function parseRiotId(
   };
 }
 
-/** Resolve a Riot ID to its PUUID via the account-v1 endpoint. */
 export async function getAccount(
   gameName: string,
   tagLine: string,
@@ -85,22 +159,29 @@ export async function getAccount(
   return riotFetch<AccountDto>(url);
 }
 
-/** Resolve a PUUID back to the player's current Riot ID. */
-export async function getAccountByPuuid(puuid: string): Promise<AccountDto> {
+async function getAccountByPuuid(puuid: string): Promise<AccountDto> {
   const url =
     `https://${RIOT_REGION}.api.riotgames.com/riot/account/v1/accounts/by-puuid/` +
     `${encodeURIComponent(puuid)}`;
   return riotFetch<AccountDto>(url);
 }
 
-async function getSummoner(puuid: string): Promise<SummonerDto> {
-  const url =
-    `https://${RIOT_PLATFORM}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/` +
-    `${encodeURIComponent(puuid)}`;
-  return riotFetch<SummonerDto>(url);
+// -- LoL-specific -----------------------------------------------------------
+
+interface LeagueEntryDto {
+  queueType: string;
+  tier: string;
+  rank: string;
+  leaguePoints: number;
+  wins: number;
+  losses: number;
 }
 
-// Latest Data Dragon version, fetched once and cached for the process lifetime.
+interface SummonerDto {
+  profileIconId: number;
+  summonerLevel: number;
+}
+
 let ddragonVersionPromise: Promise<string> | null = null;
 async function ddragonVersion(): Promise<string> {
   if (!ddragonVersionPromise) {
@@ -113,7 +194,7 @@ async function ddragonVersion(): Promise<string> {
         if (!versions[0]) throw new Error("Data Dragon returned no versions");
         return versions[0];
       } catch (err) {
-        ddragonVersionPromise = null; // allow retry on failure
+        ddragonVersionPromise = null;
         throw err;
       }
     })();
@@ -121,49 +202,16 @@ async function ddragonVersion(): Promise<string> {
   return ddragonVersionPromise;
 }
 
-function profileIconUrl(iconId: number, version: string): string {
-  return `https://ddragon.leagueoflegends.com/cdn/${version}/img/profileicon/${iconId}.png`;
-}
-
 function rankEmblemUrl(tier: string): string {
-  // Community Dragon hosts the modern ranked emblems.
   return `https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-emblem/emblem-${tier.toLowerCase()}.png`;
 }
 
-// In-memory cache for rank lookups. Keyed by PUUID; stores the in-flight
-// promise so concurrent callers (e.g. /leaderboard scoring many players)
-// coalesce onto one Riot API call instead of fanning out duplicates.
-const RANK_TTL_MS = 20 * 60_000;
-const rankCache = new Map<string, { expiry: number; promise: Promise<SoloDuoRank> }>();
-
-/** Drop a single PUUID from the cache (e.g. after re-registration). */
-export function invalidateRankCache(puuid: string): void {
-  rankCache.delete(puuid);
-}
-
-/**
- * Fetch the solo/duo rank summary for a PUUID, including profile icon and
- * rank emblem URLs for embed rendering. Returns base info even for unranked
- * players (with rank fields null) so callers can still show the profile.
- *
- * Results are cached for RANK_TTL_MS to stay well under Riot's rate limits.
- */
-export async function getSoloDuoRank(puuid: string): Promise<SoloDuoRank> {
-  const now = Date.now();
-  const cached = rankCache.get(puuid);
-  if (cached && cached.expiry > now) return cached.promise;
-
-  const promise = fetchSoloDuoRank(puuid);
-  rankCache.set(puuid, { expiry: now + RANK_TTL_MS, promise });
-  // On failure, evict so the next call retries instead of serving the rejection.
-  promise.catch(() => rankCache.delete(puuid));
-  return promise;
-}
-
-async function fetchSoloDuoRank(puuid: string): Promise<SoloDuoRank> {
+async function fetchLolRank(puuid: string): Promise<GameRank> {
   const [account, summoner, entries, version] = await Promise.all([
     getAccountByPuuid(puuid),
-    getSummoner(puuid),
+    riotFetch<SummonerDto>(
+      `https://${RIOT_PLATFORM}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${encodeURIComponent(puuid)}`,
+    ),
     riotFetch<LeagueEntryDto[]>(
       `https://${RIOT_PLATFORM}.api.riotgames.com/lol/league/v4/entries/by-puuid/${encodeURIComponent(puuid)}`,
     ),
@@ -173,22 +221,215 @@ async function fetchSoloDuoRank(puuid: string): Promise<SoloDuoRank> {
   const solo = entries.find((e) => e.queueType === "RANKED_SOLO_5x5");
 
   return {
+    game: "lol",
     gameName: account.gameName,
     tagLine: account.tagLine,
-    summonerLevel: summoner.summonerLevel,
-    profileIconUrl: profileIconUrl(summoner.profileIconId, version),
-    rankEmblemUrl: solo ? rankEmblemUrl(solo.tier) : null,
+    profileIconUrl: `https://ddragon.leagueoflegends.com/cdn/${version}/img/profileicon/${summoner.profileIconId}.png`,
+    rankIconUrl: solo ? rankEmblemUrl(solo.tier) : null,
     tier: solo?.tier ?? null,
     division: solo?.rank ?? null,
-    leaguePoints: solo?.leaguePoints ?? 0,
+    points: solo?.leaguePoints ?? 0,
     wins: solo?.wins ?? 0,
     losses: solo?.losses ?? 0,
+    summonerLevel: summoner.summonerLevel,
     fetchedAt: Date.now(),
   };
 }
 
-// Higher index = higher tier. Used for sorting players.
-const TIER_ORDER = [
+// -- Valorant via HenrikDev -------------------------------------------------
+
+// HenrikDev v3 by-puuid MMR response shape.
+interface HenrikMmrResponse {
+  data: {
+    current?: {
+      tier?: { name?: string };
+      rr?: number;
+      images?: { small?: string; large?: string };
+    };
+    seasonal?: Array<{
+      season?: { short?: string };
+      wins?: number;
+      games?: number;
+    }>;
+  };
+}
+
+interface HenrikAccountResponse {
+  data: {
+    puuid: string; // HenrikDev's dashed-UUID format
+    name: string;
+    tag: string;
+    // HenrikDev sometimes returns `card` as an object with small/large/wide
+    // URLs, other times as a bare card-ID string. Handle both.
+    card?: string | { small?: string };
+  };
+}
+
+// Henrik returns tier names like "Diamond 2" or "Radiant" — split for sorting.
+function parseValTier(name: string | undefined): {
+  tier: string | null;
+  division: string | null;
+} {
+  if (!name) return { tier: null, division: null };
+  const m = name.trim().match(/^([A-Za-z]+)(?:\s+(\d+))?$/);
+  if (!m) return { tier: null, division: null };
+  return {
+    tier: m[1]!.toUpperCase(),
+    division: m[2] ?? null,
+  };
+}
+
+async function fetchValRank(puuid: string): Promise<GameRank> {
+  // HenrikDev's v3 by-puuid endpoints want their own dashed-UUID PUUID, not
+  // Riot's encrypted account PUUID. Chain: Riot account-v1 (puuid → name/tag)
+  // → HenrikDev account-by-name (name/tag → HenrikDev puuid) → v3 mmr by puuid.
+  const account = await getAccountByPuuid(puuid);
+  const { gameName, tagLine } = account;
+  const name = encodeURIComponent(gameName);
+  const tag = encodeURIComponent(tagLine);
+
+  const accountRes = await henrikFetch<HenrikAccountResponse>(
+    `https://api.henrikdev.xyz/valorant/v2/account/${name}/${tag}`,
+  );
+  const henrikPuuid = accountRes.data.puuid;
+
+  const mmrRes = await henrikFetch<HenrikMmrResponse>(
+    `https://api.henrikdev.xyz/valorant/v3/by-puuid/mmr/${VAL_REGION}/${VAL_PLATFORM}/${encodeURIComponent(henrikPuuid)}`,
+  );
+
+  const { tier, division } = parseValTier(mmrRes.data.current?.tier?.name);
+  const latestSeason = mmrRes.data.seasonal?.[0];
+  const wins = latestSeason?.wins ?? 0;
+  const games = latestSeason?.games ?? 0;
+
+  const card = accountRes.data.card;
+  const cardIcon =
+    typeof card === "object" && typeof card?.small === "string"
+      ? card.small
+      : null;
+
+  return {
+    game: "val",
+    gameName,
+    tagLine,
+    profileIconUrl: cardIcon,
+    rankIconUrl:
+      mmrRes.data.current?.images?.small ??
+      mmrRes.data.current?.images?.large ??
+      null,
+    tier,
+    division,
+    points: mmrRes.data.current?.rr ?? 0,
+    wins,
+    losses: Math.max(0, games - wins),
+    fetchedAt: Date.now(),
+  };
+}
+
+// -- Persistent cache -------------------------------------------------------
+
+const rankCache = new Map<string, Promise<GameRank>>();
+const cacheKey = (game: Game, puuid: string) => `${game}:${puuid}`;
+
+const CACHE_FILE = resolve(process.cwd(), "data", "rank-cache.json");
+let cacheLoadPromise: Promise<void> | null = null;
+let cacheWriteQueue: Promise<void> = Promise.resolve();
+
+function loadCacheFromDisk(): Promise<void> {
+  if (!cacheLoadPromise) {
+    cacheLoadPromise = (async () => {
+      try {
+        const raw = await readFile(CACHE_FILE, "utf8");
+        const data = JSON.parse(raw) as Record<string, GameRank>;
+        for (const [key, rank] of Object.entries(data)) {
+          // Migrate legacy entries (puuid-only keys, no game field) to lol.
+          const normalizedKey = key.includes(":") ? key : `lol:${key}`;
+          const normalizedRank: GameRank = rank.game
+            ? rank
+            : { ...(rank as any), game: "lol" };
+          rankCache.set(normalizedKey, Promise.resolve(normalizedRank));
+        }
+        console.log(`[cache] loaded ${rankCache.size} entries from disk`);
+      } catch (err: any) {
+        if (err?.code !== "ENOENT") {
+          console.error("[cache] failed to load from disk:", err);
+        }
+      }
+    })();
+  }
+  return cacheLoadPromise;
+}
+
+function scheduleCacheFlush(): void {
+  cacheWriteQueue = cacheWriteQueue.then(async () => {
+    const snapshot: Record<string, GameRank> = {};
+    await Promise.all(
+      Array.from(rankCache.entries()).map(async ([key, promise]) => {
+        try {
+          snapshot[key] = await promise;
+        } catch {
+          // Skip rejected entries.
+        }
+      }),
+    );
+    try {
+      await mkdir(dirname(CACHE_FILE), { recursive: true });
+      await writeFile(CACHE_FILE, JSON.stringify(snapshot), "utf8");
+    } catch (err) {
+      console.error("[cache] failed to write to disk:", err);
+    }
+  });
+}
+
+export async function peekRank(
+  puuid: string,
+  game: Game,
+): Promise<GameRank | null> {
+  await loadCacheFromDisk();
+  const entry = rankCache.get(cacheKey(game, puuid));
+  if (!entry) return null;
+  try {
+    return await entry;
+  } catch {
+    return null;
+  }
+}
+
+export function invalidateRank(puuid: string, game?: Game): void {
+  const games: Game[] = game ? [game] : ["lol", "val"];
+  for (const g of games) {
+    if (rankCache.delete(cacheKey(g, puuid))) {
+      console.log(`[cache] invalidated ${g}:${puuid.slice(0, 8)}`);
+      scheduleCacheFlush();
+    }
+  }
+}
+
+export async function getRank(puuid: string, game: Game): Promise<GameRank> {
+  await loadCacheFromDisk();
+  const key = cacheKey(game, puuid);
+  const short = `${game}:${puuid.slice(0, 8)}`;
+  const cached = rankCache.get(key);
+  if (cached) {
+    console.log(`[cache] hit ${short}`);
+    return cached;
+  }
+
+  console.log(`[cache] miss ${short} — fetching`);
+  const promise = game === "lol" ? fetchLolRank(puuid) : fetchValRank(puuid);
+  rankCache.set(key, promise);
+  promise
+    .then(() => scheduleCacheFlush())
+    .catch(() => {
+      console.log(`[cache] evicting ${short} after failed fetch`);
+      rankCache.delete(key);
+    });
+  return promise;
+}
+
+// -- Ranking & display ------------------------------------------------------
+
+const LOL_TIER_ORDER = [
   "IRON",
   "BRONZE",
   "SILVER",
@@ -200,26 +441,69 @@ const TIER_ORDER = [
   "GRANDMASTER",
   "CHALLENGER",
 ];
-const DIVISION_ORDER = ["IV", "III", "II", "I"];
+const LOL_DIVISION_ORDER = ["IV", "III", "II", "I"];
 
-/** Numeric score for ordering ranks. Unranked returns -1. */
-export function rankScore(r: SoloDuoRank): number {
+const VAL_TIER_ORDER = [
+  "IRON",
+  "BRONZE",
+  "SILVER",
+  "GOLD",
+  "PLATINUM",
+  "DIAMOND",
+  "ASCENDANT",
+  "IMMORTAL",
+  "RADIANT",
+];
+const VAL_DIVISION_ORDER = ["1", "2", "3"];
+
+export function rankScore(r: GameRank): number {
   if (!r.tier) return -1;
-  const tier = TIER_ORDER.indexOf(r.tier);
-  const div = r.division ? DIVISION_ORDER.indexOf(r.division) : 0;
-  return tier * 10_000 + div * 1_000 + r.leaguePoints;
+  if (r.game === "lol") {
+    const tier = LOL_TIER_ORDER.indexOf(r.tier);
+    const div = r.division ? LOL_DIVISION_ORDER.indexOf(r.division) : 0;
+    return tier * 10_000 + div * 1_000 + r.points;
+  }
+  const tier = VAL_TIER_ORDER.indexOf(r.tier);
+  const div = r.division ? VAL_DIVISION_ORDER.indexOf(r.division) : 0;
+  return tier * 10_000 + div * 1_000 + r.points;
 }
 
-// Standard tier colors for embed accents.
+// Tier colors (lowercase keys for case-insensitive lookup).
 export const TIER_COLORS: Record<string, number> = {
-  IRON: 0x51484a,
-  BRONZE: 0x8c5230,
-  SILVER: 0x9aa9b2,
-  GOLD: 0xe4b34a,
-  PLATINUM: 0x4ea0a0,
-  EMERALD: 0x2f9d6b,
-  DIAMOND: 0x576bce,
-  MASTER: 0x9d4dbb,
-  GRANDMASTER: 0xc6443e,
-  CHALLENGER: 0xf4c874,
+  iron: 0x51484a,
+  bronze: 0x8c5230,
+  silver: 0x9aa9b2,
+  gold: 0xe4b34a,
+  platinum: 0x4ea0a0,
+  emerald: 0x2f9d6b,
+  diamond: 0x576bce,
+  ascendant: 0x2f9d6b,
+  master: 0x9d4dbb,
+  immortal: 0xb33b53,
+  grandmaster: 0xc6443e,
+  challenger: 0xf4c874,
+  radiant: 0xfffbcc,
 };
+
+export function tierColor(tier: string | null): number {
+  if (!tier) return 0x5865f2;
+  return TIER_COLORS[tier.toLowerCase()] ?? 0x5865f2;
+}
+
+/** Build the appropriate stat-tracker profile URL for a rank. */
+export function profileUrl(r: GameRank): string {
+  const name = encodeURIComponent(r.gameName);
+  const tag = encodeURIComponent(r.tagLine);
+  if (r.game === "lol") return `https://www.op.gg/lol/summoners/na/${name}-${tag}`;
+  return `https://tracker.gg/valorant/profile/riot/${name}%23${tag}/overview`;
+}
+
+/** Human-readable rank like "DIAMOND II 45 LP" or "Diamond 2 45 RR". */
+export function formatRank(r: GameRank): string {
+  if (!r.tier) return "Unranked";
+  const unit = r.game === "lol" ? "LP" : "RR";
+  const parts = [r.tier];
+  if (r.division) parts.push(r.division);
+  parts.push(`${r.points} ${unit}`);
+  return parts.join(" ");
+}

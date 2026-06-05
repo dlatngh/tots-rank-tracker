@@ -8,44 +8,69 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import {
-  getSoloDuoRank,
-  invalidateRankCache,
+  formatRank,
+  getRank,
+  invalidateRank,
   rankScore,
-  type SoloDuoRank,
+  type GameRank,
 } from "../riot.ts";
-import { getAllRegistrations } from "../storage.ts";
+import { getAllRegistrations, type Division } from "../storage.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("leaderboard")
-  .setDescription("Show registered players ranked from highest to lowest.");
+  .setDescription("Show registered players ranked from highest to lowest.")
+  .addStringOption((opt) =>
+    opt
+      .setName("division")
+      .setDescription("Filter to a ranked-race division. Omit for all players.")
+      .addChoices(
+        { name: "Upper", value: "upper" },
+        { name: "Lower", value: "lower" },
+      ),
+  );
 
 export const REFRESH_ID = "leaderboard:refresh";
 
 interface Entry {
   discordId: string;
-  rank: SoloDuoRank;
+  rank: GameRank;
 }
 
 export async function execute(interaction: ChatInputCommandInteraction) {
   await interaction.deferReply();
-  await interaction.editReply(await buildLeaderboardPayload());
+  const division = interaction.options.getString("division") as Division | null;
+  await interaction.editReply(await buildLeaderboardPayload(division));
 }
 
 export async function handleRefresh(interaction: ButtonInteraction) {
+  // customId format: "leaderboard:refresh[:division]"
+  const parts = interaction.customId.split(":");
+  const division = (parts[2] as Division | undefined) ?? null;
+
   await interaction.deferUpdate();
 
-  // Evict every registered player so we get live data.
   const registrations = await getAllRegistrations();
-  for (const r of registrations) invalidateRankCache(r.puuid);
+  const scope = division
+    ? registrations.filter((r) => r.division === division)
+    : registrations;
+  for (const r of scope) invalidateRank(r.puuid, "lol");
 
-  await interaction.editReply(await buildLeaderboardPayload());
+  await interaction.editReply(await buildLeaderboardPayload(division));
 }
 
-async function buildLeaderboardPayload() {
-  const registrations = await getAllRegistrations();
+async function buildLeaderboardPayload(division: Division | null) {
+  const all = await getAllRegistrations();
+  const registrations = division ? all.filter((r) => r.division === division) : all;
+
+  const titleSuffix = division
+    ? ` — ${division.charAt(0).toUpperCase() + division.slice(1)} Division`
+    : "";
+
   if (registrations.length === 0) {
     return {
-      content: "No players registered yet. Use `/register` to add one.",
+      content: division
+        ? `No players registered in the **${division}** division yet.`
+        : "No players registered yet. Use `/register` to add one.",
       embeds: [],
       components: [],
     };
@@ -54,7 +79,7 @@ async function buildLeaderboardPayload() {
   const results = await Promise.allSettled(
     registrations.map(async (reg): Promise<Entry> => ({
       discordId: reg.discordId,
-      rank: await getSoloDuoRank(reg.puuid),
+      rank: await getRank(reg.puuid, "lol"),
     })),
   );
 
@@ -68,15 +93,11 @@ async function buildLeaderboardPayload() {
   entries.sort((a, b) => rankScore(b.rank) - rankScore(a.rank));
 
   const lines = entries.map((e, i) => {
-    const r = e.rank;
-    const rankText = r.tier
-      ? `${r.tier} ${r.division} ${r.leaguePoints} LP`
-      : "Unranked";
-    return `\`${String(i + 1).padStart(2, " ")}.\` <@${e.discordId}> | ${rankText}`;
+    return `\`${String(i + 1).padStart(2, " ")}.\` <@${e.discordId}> | ${formatRank(e.rank)}`;
   });
 
   const embed = new EmbedBuilder()
-    .setTitle("Solo/Duo Leaderboard")
+    .setTitle(`Solo/Duo Leaderboard${titleSuffix}`)
     .setColor(0x5865f2)
     .setDescription(lines.join("\n") || "No data to show.")
     .setTimestamp(new Date());
@@ -85,9 +106,10 @@ async function buildLeaderboardPayload() {
     embed.setFooter({ text: `${failed} player(s) failed to load.` });
   }
 
+  const customId = division ? `${REFRESH_ID}:${division}` : REFRESH_ID;
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(REFRESH_ID)
+      .setCustomId(customId)
       .setLabel("Refresh")
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("🔄"),

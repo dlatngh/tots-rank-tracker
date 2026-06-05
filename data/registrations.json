@@ -1,47 +1,58 @@
 {
   "993959164667756565": {
     "puuid": "uegL7c5-k-xtdGJLd5ZXAo50THICvs0FC_InTsk11rcoHhaoMIBV_dMetEcH1HVzgVufDDF6VqFG2Q",
-    "updatedAt": "2026-06-05T03:05:22.464Z"
+    "updatedAt": "2026-06-05T03:05:22.464Z",
+    "division": "lower"
   },
   "195352519155777536": {
     "puuid": "axgncboz2S6mV8pPpb7OQj5wCGGs452qbrTUsMETMMM1MySi9MlZzTxAgoe7tnkuhWuKJwen9Tz5Mw",
-    "updatedAt": "2026-06-05T03:05:51.768Z"
+    "updatedAt": "2026-06-05T03:05:51.768Z",
+    "division": "upper"
   },
   "361632242629476352": {
     "puuid": "jbI3BzympX1QjnyW9V1rf-0IJpQStIHXbKJobrz1M3fz_MPjFMNjJKcgGA-0bDXfA5GHBSe4z3cxDA",
-    "updatedAt": "2026-06-05T03:07:41.591Z"
+    "updatedAt": "2026-06-05T03:07:41.591Z",
+    "division": "lower"
   },
   "342438633669787648": {
     "puuid": "XmYeVc6c_yRfkFeqoKTJqqE7ZPM64vtMFUwBRkHOf7iN2WxZionWo2Bv2uMjePMMZ6Ze33_S6RkHkQ",
-    "updatedAt": "2026-06-05T03:08:44.187Z"
+    "updatedAt": "2026-06-05T03:08:44.187Z",
+    "division": "lower"
   },
   "385585571344547852": {
     "puuid": "viHl1qVGXMtRgoiN5AgVb05m-7G5Rb84dekJujxmyyt567m54G-Z4P1bM4CnwghQmrSATNpElm7AVw",
-    "updatedAt": "2026-06-05T03:09:36.449Z"
+    "updatedAt": "2026-06-05T03:09:36.449Z",
+    "division": "lower"
   },
   "601075077542313984": {
     "puuid": "NCCimeuimip8KpcQpXgIIkfn21qDpLRZiNuoxdDc1rQAAY9SJFsCGCumqO0hFw638RTbppYuc5WccA",
-    "updatedAt": "2026-06-05T03:10:14.112Z"
+    "updatedAt": "2026-06-05T03:10:14.112Z",
+    "division": "lower"
   },
   "495998386609324042": {
     "puuid": "aZ7JdaSU0hGcL0Ik8xy1w4vJThL7UyMZN42fjSSP7RZLBPBelTpqqGkJbJBU5LEowV6S8KSKJ2lTqQ",
-    "updatedAt": "2026-06-05T03:11:24.897Z"
+    "updatedAt": "2026-06-05T03:11:24.897Z",
+    "division": "upper"
   },
   "525845698143584256": {
     "puuid": "shcU3W40hmqsQ40QXT5dHRz5Q72Q-XxsQjCOOr8qL8lkrfjYNuPpZJbo9WzkC0qKCpxui7NzhaOKHg",
-    "updatedAt": "2026-06-05T03:13:06.279Z"
+    "updatedAt": "2026-06-05T03:13:06.279Z",
+    "division": "lower"
   },
   "260974251841028096": {
     "puuid": "a7nTuAZg7y7HzoWescpnv7xX0tZE53e4otZvC-PY07G8-6IRDOFA2LLNxZ-RAbvQtw5RMYcsPB04fA",
-    "updatedAt": "2026-06-05T03:14:28.257Z"
+    "updatedAt": "2026-06-05T03:14:28.257Z",
+    "division": "lower"
   },
   "268539567324397580": {
     "puuid": "kuHvtAWHqHzDpZMfFOePTPjPcCi3PUymjSuKKAHSDcPPeEaDrnlFmNB343s1mhQ1IWsC3ZRavC_Qdg",
-    "updatedAt": "2026-06-05T03:15:16.674Z"
+    "updatedAt": "2026-06-05T03:15:16.674Z",
+    "division": "upper"
   },
   "259810841988300800": {
     "puuid": "kDFMvNEhMRiyJzhWItQ_A1DSAy-pSfJM_F5rBocael0tMtBf-t2Xsvs5ML4hkBEMn3V1Xk-BcEYunw",
-    "updatedAt": "2026-06-05T03:16:54.807Z"
+    "updatedAt": "2026-06-05T03:16:54.807Z",
+    "division": "upper"
   },
   "630077110538469396": {
     "puuid": "f8Fd845UuH4IfkHdgk4DmmD89wSzBCuW2Vuf978rvPyF5gNyvWg0QKu2wDaS364foHPartABf1uF3A",

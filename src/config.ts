@@ -14,8 +14,13 @@ export const config = {
   // Optional: register commands to a single guild for instant updates during dev.
   guildId: process.env.DISCORD_GUILD_ID ?? "",
   riotApiKey: required("RIOT_API_KEY"),
+  henrikApiKey: required("HENRIK_API_KEY"),
 };
 
 // Region routing (NA). See https://developer.riotgames.com/docs/lol#routing-values
 export const RIOT_PLATFORM = "na1"; // platform routing (summoner / league endpoints)
 export const RIOT_REGION = "americas"; // regional routing (account-v1 endpoint)
+
+// HenrikDev Valorant API routing
+export const VAL_REGION = "na";
+export const VAL_PLATFORM = "pc";
