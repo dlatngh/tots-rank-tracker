@@ -4,6 +4,7 @@ import * as lol from "./lol.ts";
 import * as val from "./val.ts";
 import * as leaderboard from "./leaderboard.ts";
 import * as division from "./division.ts";
+import * as game from "./game.ts";
 
 export const commands = {
   ping,
@@ -12,4 +13,5 @@ export const commands = {
   val,
   leaderboard,
   division,
+  game,
 };

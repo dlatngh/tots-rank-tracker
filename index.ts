@@ -2,6 +2,7 @@ import { Client, Events, GatewayIntentBits } from "discord.js";
 import { config } from "./src/config.ts";
 import { commands } from "./src/commands/index.ts";
 import { registerCommands } from "./src/deploy-commands.ts";
+import { log, logError } from "./src/log.ts";
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -27,14 +28,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const label = sub
       ? `/${interaction.commandName} ${sub}`
       : `/${interaction.commandName}`;
-    console.log(
-      `[cmd] ${label} by ${interaction.user.tag} in ${interaction.guild?.name ?? "DM"}`,
-    );
+    log("cmd", `${label} by ${interaction.user.tag} in ${interaction.guild?.name ?? "DM"}`);
     try {
       await command.execute(interaction);
-      console.log(`[cmd] ${label} done (${Date.now() - started}ms)`);
+      log("cmd", `${label} done (${Date.now() - started}ms)`);
     } catch (err) {
-      console.error(`Error in /${interaction.commandName}:`, err);
+      logError("cmd", `Error in /${interaction.commandName}:`, err);
       const msg = "An error occurred while executing this command.";
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(msg).catch(() => {});
@@ -48,9 +47,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isButton()) {
     const [namespace] = interaction.customId.split(":");
     const started = Date.now();
-    console.log(
-      `[btn] ${interaction.customId} by ${interaction.user.tag}`,
-    );
+    log("btn", `${interaction.customId} by ${interaction.user.tag}`);
     try {
       if (namespace === "lol") {
         await commands.lol.handleRefresh(interaction);
@@ -59,9 +56,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } else if (namespace === "leaderboard") {
         await commands.leaderboard.handleRefresh(interaction);
       }
-      console.log(`[btn] ${interaction.customId} done (${Date.now() - started}ms)`);
+      log("btn", `${interaction.customId} done (${Date.now() - started}ms)`);
     } catch (err) {
-      console.error(`Error handling button ${interaction.customId}:`, err);
+      logError("btn", `Error handling button ${interaction.customId}:`, err);
       const msg = "An error occurred while refreshing.";
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});

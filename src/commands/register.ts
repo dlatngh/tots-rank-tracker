@@ -73,7 +73,10 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     return;
   }
 
-  const { previous } = await setRegistration(discordId, puuid, division);
+  const { previous } = await setRegistration(discordId, puuid, division, {
+    gameName: parsed.gameName,
+    tagLine: parsed.tagLine,
+  });
   invalidateRank(puuid);
   if (previous && previous !== puuid) invalidateRank(previous);
 

@@ -12,21 +12,30 @@ import {
   getRank,
   invalidateRank,
   rankScore,
+  type Game,
   type GameRank,
 } from "../riot.ts";
-import { getAllRegistrations, type Division } from "../storage.ts";
+import { getAllRegistrations, updateRiotId, type Division } from "../storage.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("leaderboard")
   .setDescription("Show registered players ranked from highest to lowest.")
-  .addStringOption((opt) =>
-    opt
-      .setName("division")
-      .setDescription("Filter to a ranked-race division. Omit for all players.")
-      .addChoices(
-        { name: "Upper", value: "upper" },
-        { name: "Lower", value: "lower" },
+  .addSubcommand((sc) =>
+    sc
+      .setName("lol")
+      .setDescription("League of Legends solo/duo leaderboard.")
+      .addStringOption((opt) =>
+        opt
+          .setName("division")
+          .setDescription("Filter to a ranked-race division. Omit for all.")
+          .addChoices(
+            { name: "Upper", value: "upper" },
+            { name: "Lower", value: "lower" },
+          ),
       ),
+  )
+  .addSubcommand((sc) =>
+    sc.setName("val").setDescription("Valorant current-act leaderboard."),
   );
 
 export const REFRESH_ID = "leaderboard:refresh";
@@ -36,16 +45,26 @@ interface Entry {
   rank: GameRank;
 }
 
+const GAME_LABELS: Record<Game, string> = {
+  lol: "Solo/Duo",
+  val: "Valorant",
+};
+
 export async function execute(interaction: ChatInputCommandInteraction) {
   await interaction.deferReply();
-  const division = interaction.options.getString("division") as Division | null;
-  await interaction.editReply(await buildLeaderboardPayload(division));
+  const game = interaction.options.getSubcommand() as Game;
+  const division =
+    game === "lol"
+      ? (interaction.options.getString("division") as Division | null)
+      : null;
+  await interaction.editReply(await buildLeaderboardPayload(game, division));
 }
 
 export async function handleRefresh(interaction: ButtonInteraction) {
-  // customId format: "leaderboard:refresh[:division]"
+  // customId format: "leaderboard:refresh:<game>[:<division>]"
   const parts = interaction.customId.split(":");
-  const division = (parts[2] as Division | undefined) ?? null;
+  const game = (parts[2] as Game | undefined) ?? "lol";
+  const division = (parts[3] as Division | undefined) ?? null;
 
   await interaction.deferUpdate();
 
@@ -53,16 +72,16 @@ export async function handleRefresh(interaction: ButtonInteraction) {
   const scope = division
     ? registrations.filter((r) => r.division === division)
     : registrations;
-  for (const r of scope) invalidateRank(r.puuid, "lol");
+  for (const r of scope) invalidateRank(r.puuid, game);
 
-  await interaction.editReply(await buildLeaderboardPayload(division));
+  await interaction.editReply(await buildLeaderboardPayload(game, division));
 }
 
-async function buildLeaderboardPayload(division: Division | null) {
+async function buildLeaderboardPayload(game: Game, division: Division | null) {
   const all = await getAllRegistrations();
   const registrations = division ? all.filter((r) => r.division === division) : all;
 
-  const titleSuffix = division
+  const divisionSuffix = division
     ? ` — ${division.charAt(0).toUpperCase() + division.slice(1)} Division`
     : "";
 
@@ -77,10 +96,16 @@ async function buildLeaderboardPayload(division: Division | null) {
   }
 
   const results = await Promise.allSettled(
-    registrations.map(async (reg): Promise<Entry> => ({
-      discordId: reg.discordId,
-      rank: await getRank(reg.puuid, "lol"),
-    })),
+    registrations.map(async (reg): Promise<Entry> => {
+      const rank = await getRank(reg.puuid, game, {
+        gameName: reg.gameName,
+        tagLine: reg.tagLine,
+      });
+      if (rank.gameName !== reg.gameName || rank.tagLine !== reg.tagLine) {
+        void updateRiotId(reg.discordId, rank.gameName, rank.tagLine);
+      }
+      return { discordId: reg.discordId, rank };
+    }),
   );
 
   const entries: Entry[] = [];
@@ -97,7 +122,7 @@ async function buildLeaderboardPayload(division: Division | null) {
   });
 
   const embed = new EmbedBuilder()
-    .setTitle(`Solo/Duo Leaderboard${titleSuffix}`)
+    .setTitle(`${GAME_LABELS[game]} Leaderboard${divisionSuffix}`)
     .setColor(0x5865f2)
     .setDescription(lines.join("\n") || "No data to show.")
     .setTimestamp(new Date());
@@ -106,7 +131,9 @@ async function buildLeaderboardPayload(division: Division | null) {
     embed.setFooter({ text: `${failed} player(s) failed to load.` });
   }
 
-  const customId = division ? `${REFRESH_ID}:${division}` : REFRESH_ID;
+  const customId = division
+    ? `${REFRESH_ID}:${game}:${division}`
+    : `${REFRESH_ID}:${game}`;
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(customId)

@@ -10,6 +10,7 @@ import {
   VAL_PLATFORM,
   VAL_REGION,
 } from "./config.ts";
+import { log, logError } from "./log.ts";
 
 export type Game = "lol" | "val";
 
@@ -83,7 +84,7 @@ async function backoffFetch<T>(
       const started = Date.now();
       const res = await fetch(url, init);
       const ms = Date.now() - started;
-      console.log(`[${logPrefix}] ${res.status} ${path} (${ms}ms)`);
+      log(logPrefix, `${res.status} ${path} (${ms}ms)`);
 
       if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
         const exp = 2 ** attempt * 1000;
@@ -92,8 +93,9 @@ async function backoffFetch<T>(
         const hint =
           Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
         const waitMs = Math.max(jitter, hint);
-        console.log(
-          `[${logPrefix}] retrying ${path} in ${Math.round(waitMs)}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
+        log(
+          logPrefix,
+          `retrying ${path} in ${Math.round(waitMs)}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
         );
         await sleep(waitMs);
         continue;
@@ -101,7 +103,7 @@ async function backoffFetch<T>(
 
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        if (body) console.log(`[${logPrefix}] error body: ${body.slice(0, 500)}`);
+        if (body) logError(logPrefix, `error body: ${body.slice(0, 500)}`);
         throw new RiotApiError(
           `${logPrefix} ${res.status} for ${url}${body ? `: ${body}` : ""}`,
           res.status,
@@ -291,7 +293,7 @@ async function valTierIcons(): Promise<Map<number, string>> {
         const icon = t.smallIcon ?? t.largeIcon;
         if (icon) map.set(t.tier, icon);
       }
-      console.log(`[valapi] loaded ${map.size} tier icons`);
+      log("valapi", `loaded ${map.size} tier icons`);
       return map;
     })().catch((err) => {
       valTierIconsPromise = null;
@@ -319,18 +321,51 @@ function parseValTier(name: string | undefined): {
   };
 }
 
-async function fetchValRank(puuid: string): Promise<GameRank> {
-  // HenrikDev's v3 by-puuid endpoints want their own dashed-UUID PUUID, not
-  // Riot's encrypted account PUUID. Chain: Riot account-v1 (puuid → name/tag)
-  // → HenrikDev account-by-name (name/tag → HenrikDev puuid) → v3 mmr by puuid.
-  const account = await getAccountByPuuid(puuid);
-  const { gameName, tagLine } = account;
-  const name = encodeURIComponent(gameName);
-  const tag = encodeURIComponent(tagLine);
+async function fetchValRank(
+  puuid: string,
+  hint?: { gameName?: string; tagLine?: string },
+): Promise<GameRank> {
+  // HenrikDev needs name+tag (not Riot's encrypted PUUID). Use the hint from
+  // the registration when available; only fall back to Riot account-v1 when
+  // it's missing or stale (player renamed themselves).
+  let gameName: string;
+  let tagLine: string;
+  let resolvedViaRiot = false;
+  if (hint?.gameName && hint?.tagLine) {
+    gameName = hint.gameName;
+    tagLine = hint.tagLine;
+  } else {
+    const account = await getAccountByPuuid(puuid);
+    gameName = account.gameName;
+    tagLine = account.tagLine;
+    resolvedViaRiot = true;
+  }
 
-  const accountRes = await henrikFetch<HenrikAccountResponse>(
-    `https://api.henrikdev.xyz/valorant/v2/account/${name}/${tag}`,
-  );
+  // Resolve stored name/tag against HenrikDev; on 404 (rename), refresh via
+  // Riot account-v1 and retry — once, to avoid loops.
+  let accountRes;
+  try {
+    accountRes = await henrikFetch<HenrikAccountResponse>(
+      `https://api.henrikdev.xyz/valorant/v2/account/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`,
+    );
+  } catch (err) {
+    if (
+      err instanceof RiotApiError &&
+      err.status === 404 &&
+      !resolvedViaRiot
+    ) {
+      log("henrik", `stale name/tag for ${puuid.slice(0, 8)}, refreshing via Riot`);
+      const account = await getAccountByPuuid(puuid);
+      gameName = account.gameName;
+      tagLine = account.tagLine;
+      resolvedViaRiot = true;
+      accountRes = await henrikFetch<HenrikAccountResponse>(
+        `https://api.henrikdev.xyz/valorant/v2/account/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`,
+      );
+    } else {
+      throw err;
+    }
+  }
   const henrikPuuid = accountRes.data.puuid;
 
   const [mmrRes, tierIcons] = await Promise.all([
@@ -358,8 +393,9 @@ async function fetchValRank(puuid: string): Promise<GameRank> {
         : best,
     undefined,
   );
-  console.log(
-    `[henrik] current act ${current?.season?.short ?? "?"}: ${current?.wins ?? 0}W/${(current?.games ?? 0) - (current?.wins ?? 0)}L`,
+  log(
+    "henrik",
+    `current act ${current?.season?.short ?? "?"}: ${current?.wins ?? 0}W/${(current?.games ?? 0) - (current?.wins ?? 0)}L`,
   );
   const wins = current?.wins ?? 0;
   const games = current?.games ?? 0;
@@ -416,10 +452,10 @@ function loadCacheFromDisk(): Promise<void> {
           };
           rankCache.set(normalizedKey, Promise.resolve(normalizedRank));
         }
-        console.log(`[cache] loaded ${rankCache.size} entries from disk`);
+        log("cache", `loaded ${rankCache.size} entries from disk`);
       } catch (err: any) {
         if (err?.code !== "ENOENT") {
-          console.error("[cache] failed to load from disk:", err);
+          logError("cache", "failed to load from disk:", err);
         }
       }
     })();
@@ -443,7 +479,7 @@ function scheduleCacheFlush(): void {
       await mkdir(dirname(CACHE_FILE), { recursive: true });
       await writeFile(CACHE_FILE, JSON.stringify(snapshot), "utf8");
     } catch (err) {
-      console.error("[cache] failed to write to disk:", err);
+      logError("cache", "failed to write to disk:", err);
     }
   });
 }
@@ -466,29 +502,38 @@ export function invalidateRank(puuid: string, game?: Game): void {
   const games: Game[] = game ? [game] : ["lol", "val"];
   for (const g of games) {
     if (rankCache.delete(cacheKey(g, puuid))) {
-      console.log(`[cache] invalidated ${g}:${puuid.slice(0, 8)}`);
+      log("cache", `invalidated ${g}:${puuid.slice(0, 8)}`);
       scheduleCacheFlush();
     }
   }
 }
 
-export async function getRank(puuid: string, game: Game): Promise<GameRank> {
+export interface RankHint {
+  gameName?: string;
+  tagLine?: string;
+}
+
+export async function getRank(
+  puuid: string,
+  game: Game,
+  hint?: RankHint,
+): Promise<GameRank> {
   await loadCacheFromDisk();
   const key = cacheKey(game, puuid);
   const short = `${game}:${puuid.slice(0, 8)}`;
   const cached = rankCache.get(key);
   if (cached) {
-    console.log(`[cache] hit ${short}`);
+    log("cache", `hit ${short}`);
     return cached;
   }
 
-  console.log(`[cache] miss ${short} — fetching`);
-  const promise = game === "lol" ? fetchLolRank(puuid) : fetchValRank(puuid);
+  log("cache", `miss ${short} — fetching`);
+  const promise = game === "lol" ? fetchLolRank(puuid) : fetchValRank(puuid, hint);
   rankCache.set(key, promise);
   promise
     .then(() => scheduleCacheFlush())
     .catch(() => {
-      console.log(`[cache] evicting ${short} after failed fetch`);
+      log("cache", `evicting ${short} after failed fetch`);
       rankCache.delete(key);
     });
   return promise;

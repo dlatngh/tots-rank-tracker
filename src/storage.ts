@@ -14,6 +14,8 @@ export interface Registration {
   puuid: string;
   updatedAt: string;
   division?: Division;
+  gameName?: string;
+  tagLine?: string;
 }
 
 type Store = Record<string, Registration>;
@@ -60,6 +62,7 @@ export async function setRegistration(
   discordId: string,
   puuid: string,
   division?: Division | null,
+  riotId?: { gameName: string; tagLine: string },
 ): Promise<{ previous?: string }> {
   let previous: string | undefined;
 
@@ -77,7 +80,10 @@ export async function setRegistration(
       puuid,
       updatedAt: new Date().toISOString(),
       ...(nextDivision ? { division: nextDivision } : {}),
+      ...(riotId ?? (existing ? { gameName: existing.gameName, tagLine: existing.tagLine } : {})),
     };
+    if (!store[discordId].gameName) delete store[discordId].gameName;
+    if (!store[discordId].tagLine) delete store[discordId].tagLine;
     await write(store);
   });
 
@@ -85,6 +91,23 @@ export async function setRegistration(
   await task;
 
   return { previous };
+}
+
+/** Update name/tag for an existing registration. Used to backfill on demand. */
+export async function updateRiotId(
+  discordId: string,
+  gameName: string,
+  tagLine: string,
+): Promise<void> {
+  const task = writeQueue.then(async () => {
+    const store = await read();
+    const existing = store[discordId];
+    if (!existing) return;
+    store[discordId] = { ...existing, gameName, tagLine };
+    await write(store);
+  });
+  writeQueue = task.catch(() => {});
+  await task;
 }
 
 /**

@@ -19,7 +19,7 @@ import {
   tierColor,
   type Game,
 } from "./riot.ts";
-import { getAllRegistrations, getRegistration } from "./storage.ts";
+import { getAllRegistrations, getRegistration, updateRiotId } from "./storage.ts";
 
 const GAME_LABELS: Record<Game, string> = {
   lol: "Solo/Duo",
@@ -39,7 +39,17 @@ export async function buildRankPayload(user: User, game: Game) {
 
   let rank;
   try {
-    rank = await getRank(registration.puuid, game);
+    rank = await getRank(registration.puuid, game, {
+      gameName: registration.gameName,
+      tagLine: registration.tagLine,
+    });
+    // Self-heal: if the player renamed, persist the fresh name/tag.
+    if (
+      rank.gameName !== registration.gameName ||
+      rank.tagLine !== registration.tagLine
+    ) {
+      void updateRiotId(discordId, rank.gameName, rank.tagLine);
+    }
   } catch (err) {
     const msg =
       err instanceof RiotApiError && err.status === 404
