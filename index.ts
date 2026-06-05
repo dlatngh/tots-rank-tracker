@@ -1,31 +1,60 @@
-import { Client } from "discord.js";
-import { commands } from "./src/commands";
-import { deployCommands } from "./src/utility/deploy-commands";
+import { Client, Events, GatewayIntentBits } from "discord.js";
+import { config } from "./src/config.ts";
+import { commands } from "./src/commands/index.ts";
+import { registerCommands } from "./src/deploy-commands.ts";
 
-const client = new Client({
-  intents: ["Guilds", "GuildMessages", "DirectMessages"],
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once("clientReady", async () => {
-  console.log("Discord bot is ready! 🤖");
+client.once(Events.ClientReady, async (c) => {
+  console.log(`Ready! Logged in as ${c.user.tag}`);
 
-  for (const guild of client.guilds.cache.values()) {
-    await deployCommands({ guildId: guild.id });
+  // Auto-register on startup only in guild-dev mode (instant + safe to repeat).
+  // Global registration stays a manual `bun run deploy` to avoid rate limits.
+  if (config.guildId) {
+    await registerCommands().catch((err) =>
+      console.error("Auto command registration failed:", err),
+    );
   }
 });
 
-client.on("guildCreate", async (guild) => {
-  await deployCommands({ guildId: guild.id });
-});
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isChatInputCommand()) {
+    const command = commands[interaction.commandName as keyof typeof commands];
+    if (!command) return;
 
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isCommand()) {
+    try {
+      await command.execute(interaction);
+    } catch (err) {
+      console.error(`Error in /${interaction.commandName}:`, err);
+      const msg = "An error occurred while executing this command.";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(msg).catch(() => {});
+      } else {
+        await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+      }
+    }
     return;
   }
-  const { commandName } = interaction;
-  if (commands[commandName as keyof typeof commands]) {
-    commands[commandName as keyof typeof commands].execute(interaction);
+
+  if (interaction.isButton()) {
+    // customId is namespaced as "<command>:<action>[:...]" — route on the prefix.
+    const [namespace] = interaction.customId.split(":");
+    try {
+      if (namespace === "rank") {
+        await commands.rank.handleRefresh(interaction);
+      } else if (namespace === "leaderboard") {
+        await commands.leaderboard.handleRefresh(interaction);
+      }
+    } catch (err) {
+      console.error(`Error handling button ${interaction.customId}:`, err);
+      const msg = "An error occurred while refreshing.";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: msg, ephemeral: true }).catch(() => {});
+      } else {
+        await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+      }
+    }
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+await client.login(config.discordToken);
