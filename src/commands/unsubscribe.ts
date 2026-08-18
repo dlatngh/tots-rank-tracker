@@ -2,6 +2,7 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   SlashCommandBuilder,
+  MessageFlags,
 } from "discord.js";
 import { getChampions, normalizeChampionName } from "../utility/riot.ts";
 import { getSubscriptions, unsubscribe } from "../utility/champion-subs.ts";
@@ -36,7 +37,7 @@ export async function autocomplete(interaction: AutocompleteInteraction) {
 }
 
 export async function execute(interaction: ChatInputCommandInteraction) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const input = interaction.options.getString("champion", true);
   const champions = await getChampions();

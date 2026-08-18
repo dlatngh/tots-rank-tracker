@@ -284,7 +284,13 @@ async function fetchLolRank(puuid: string): Promise<GameRank> {
 
 // Ranked Solo/Duo queue id, used to filter match-v5 to ranked games only.
 const RANKED_SOLO_QUEUE = 420;
-const MATCH_HISTORY_COUNT = 5;
+// Deep enough for duo detection to be meaningful. The rank embed only lists
+// DISPLAYED_MATCH_COUNT of these; the rest exist so repeat teammates show up.
+const MATCH_HISTORY_COUNT = 15;
+export const DISPLAYED_MATCH_COUNT = 5;
+// Riot's development key allows 20 requests/second and 100 per 2 minutes, so
+// firing every match detail call at once trips a 429. Fetch them in batches.
+const MATCH_FETCH_BATCH_SIZE = 5;
 
 export interface MatchSummary {
   championName: string;
@@ -294,6 +300,7 @@ export interface MatchSummary {
   win: boolean;
   durationSec: number;
   endedAt: number; // unix ms
+  teammatePuuids: string[]; // the other four on your side
 }
 
 interface MatchV5Response {
@@ -303,6 +310,7 @@ interface MatchV5Response {
     gameEndTimestamp?: number;
     participants: Array<{
       puuid: string;
+      teamId: number;
       championName: string;
       kills: number;
       deaths: number;
@@ -316,6 +324,10 @@ interface MatchV5Response {
 // in-memory cache (no disk persistence — it's cheap to refetch on restart).
 // Cleared alongside the LoL rank when a user hits Refresh.
 const matchCache = new Map<string, Promise<MatchSummary[]>>();
+// Last successful fetch per player. A refresh clears the cache above and
+// refetches ~31 calls, which can trip Riot's rate limit; without this the
+// embed would silently lose its match and duo sections on a bad refresh.
+const lastGoodMatches = new Map<string, MatchSummary[]>();
 
 async function fetchMatchHistory(puuid: string): Promise<MatchSummary[]> {
   const ids = await riotFetch<string[]>(
@@ -323,13 +335,18 @@ async function fetchMatchHistory(puuid: string): Promise<MatchSummary[]> {
       `${encodeURIComponent(puuid)}/ids?queue=${RANKED_SOLO_QUEUE}&start=0&count=${MATCH_HISTORY_COUNT}`,
   );
 
-  const matches = await Promise.all(
-    ids.map((id) =>
-      riotFetch<MatchV5Response>(
-        `https://${RIOT_REGION}.api.riotgames.com/lol/match/v5/matches/${encodeURIComponent(id)}`,
+  const matches: MatchV5Response[] = [];
+  for (let start = 0; start < ids.length; start += MATCH_FETCH_BATCH_SIZE) {
+    const batch = ids.slice(start, start + MATCH_FETCH_BATCH_SIZE);
+    const fetched = await Promise.all(
+      batch.map((id) =>
+        riotFetch<MatchV5Response>(
+          `https://${RIOT_REGION}.api.riotgames.com/lol/match/v5/matches/${encodeURIComponent(id)}`,
+        ),
       ),
-    ),
-  );
+    );
+    matches.push(...fetched);
+  }
 
   const summaries: MatchSummary[] = [];
   for (const match of matches) {
@@ -338,7 +355,15 @@ async function fetchMatchHistory(puuid: string): Promise<MatchSummary[]> {
     const endedAt =
       match.info.gameEndTimestamp ??
       match.info.gameStartTimestamp + match.info.gameDuration * 1000;
+    const teammatePuuids = match.info.participants
+      .filter(
+        (participant) =>
+          participant.teamId === me.teamId && participant.puuid !== puuid,
+      )
+      .map((participant) => participant.puuid);
+
     summaries.push({
+      teammatePuuids,
       championName: me.championName,
       kills: me.kills,
       deaths: me.deaths,
@@ -361,12 +386,23 @@ export function getMatchHistory(puuid: string): Promise<MatchSummary[]> {
 
   log("cache", `miss ${short} — fetching`);
   const promise = fetchMatchHistory(puuid);
-  matchCache.set(puuid, promise);
-  promise.catch(() => {
-    log("cache", `evicting ${short} after failed fetch`);
-    matchCache.delete(puuid);
+
+  const withFallback = promise.catch((err) => {
+    const stale = lastGoodMatches.get(puuid);
+    if (!stale) throw err;
+    log("cache", `serving stale ${short} after failed fetch`);
+    return stale;
   });
-  return promise;
+  matchCache.set(puuid, withFallback);
+
+  promise.then(
+    (matches) => lastGoodMatches.set(puuid, matches),
+    () => {
+      log("cache", `evicting ${short} after failed fetch`);
+      matchCache.delete(puuid);
+    },
+  );
+  return withFallback;
 }
 
 export function invalidateMatchHistory(puuid: string): void {

@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits } from "discord.js";
+import { Client, Events, GatewayIntentBits, MessageFlags } from "discord.js";
 import { config } from "./src/utility/config.ts";
 import { commands } from "./src/commands/index.ts";
 import { registerCommands } from "./src/utility/deploy-commands.ts";
@@ -23,6 +23,15 @@ client.once(Events.ClientReady, async (c) => {
   startPatchWebhook(c);
 });
 
+// Discord discards an interaction token if it is not acknowledged within three
+// seconds, which happens when the process restarts mid-interaction. Nothing can
+// be sent back at that point, so log it plainly instead of a REST stack trace.
+function isExpiredInteraction(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null && (err as { code?: number }).code === 10062
+  );
+}
+
 client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isAutocomplete()) {
     const command = commands[interaction.commandName as keyof typeof commands];
@@ -32,8 +41,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
           interaction,
         );
       } catch (err) {
+        if (isExpiredInteraction(err)) {
+          logError("cmd", `autocomplete for /${interaction.commandName} expired`);
+          return;
+        }
         logError("cmd", `Autocomplete error for /${interaction.commandName}:`, err);
       }
+    } else if (command) {
+      logError(
+        "cmd",
+        `/${interaction.commandName} has no autocomplete handler`,
+      );
     }
     return;
   }
@@ -47,21 +65,36 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const label = sub
       ? `/${interaction.commandName} ${sub}`
       : `/${interaction.commandName}`;
+    const suppliedOptions = interaction.options.data
+      .flatMap((option) => option.options ?? [option])
+      .map((option) => `${option.name}:${option.value}`)
+      .join(" ");
     log(
       "cmd",
-      `${label} by ${interaction.user.tag} in ${interaction.guild?.name ?? "DM"}`,
+      `${label} ${suppliedOptions || "(no options)"} by ${interaction.user.tag} in ${interaction.guild?.name ?? "DM"} #${
+        interaction.channel && "name" in interaction.channel
+          ? interaction.channel.name
+          : "dm"
+      }`,
     );
     try {
       await command.execute(interaction);
       log("cmd", `${label} done (${Date.now() - started}ms)`);
     } catch (err) {
+      if (isExpiredInteraction(err)) {
+        logError(
+          "cmd",
+          `${label} expired before it could be acknowledged (bot restart, or over 3s to respond)`,
+        );
+        return;
+      }
       logError("cmd", `Error in /${interaction.commandName}:`, err);
       const msg = "I cant do it my sodium is too high.";
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(msg).catch(() => {});
       } else {
         await interaction
-          .reply({ content: msg, ephemeral: true })
+          .reply({ content: msg, flags: MessageFlags.Ephemeral })
           .catch(() => {});
       }
     }
@@ -78,13 +111,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       log("cmd", `modal ${interaction.customId} done (${Date.now() - started}ms)`);
     } catch (err) {
+      if (isExpiredInteraction(err)) {
+        logError(
+          "cmd",
+          `modal ${interaction.customId} expired before it could be acknowledged (bot restart, or over 3s to respond)`,
+        );
+        return;
+      }
       logError("cmd", `Error handling modal ${interaction.customId}:`, err);
       const msg = "I cant do it my sodium is too high.";
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(msg).catch(() => {});
       } else {
         await interaction
-          .reply({ content: msg, ephemeral: true })
+          .reply({ content: msg, flags: MessageFlags.Ephemeral })
           .catch(() => {});
       }
     }
@@ -107,15 +147,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       log("btn", `${interaction.customId} done (${Date.now() - started}ms)`);
     } catch (err) {
+      if (isExpiredInteraction(err)) {
+        logError(
+          "btn",
+          `${interaction.customId} expired before it could be acknowledged (bot restart, or over 3s to respond)`,
+        );
+        return;
+      }
       logError("btn", `Error handling button ${interaction.customId}:`, err);
       const msg = "An error occurred while refreshing.";
       if (interaction.deferred || interaction.replied) {
         await interaction
-          .followUp({ content: msg, ephemeral: true })
+          .followUp({ content: msg, flags: MessageFlags.Ephemeral })
           .catch(() => {});
       } else {
         await interaction
-          .reply({ content: msg, ephemeral: true })
+          .reply({ content: msg, flags: MessageFlags.Ephemeral })
           .catch(() => {});
       }
     }

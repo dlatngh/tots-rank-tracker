@@ -7,9 +7,11 @@ import {
   ButtonStyle,
   EmbedBuilder,
   type User,
+  MessageFlags,
 } from "discord.js";
 import {
   formatRank,
+  DISPLAYED_MATCH_COUNT,
   getMatchHistory,
   getRank,
   invalidateRank,
@@ -22,6 +24,13 @@ import {
   type MatchSummary,
 } from "./riot.ts";
 import { getAllRegistrations, getRegistration, updateRiotId } from "./storage.ts";
+import { log } from "./log.ts";
+import {
+  getSummonerProfile,
+  type SummonerChampion,
+  type SummonerProfile,
+  type SummonerQueueRank,
+} from "./opgg.ts";
 import { getSoloLpDelta, type LpDelta } from "./rank-history.ts";
 
 const GAME_LABELS: Record<Game, string> = {
@@ -44,7 +53,87 @@ function formatMatchLine(match: MatchSummary): string {
   return `${outcome} **${match.championName}** ${kda} · ${durationMinutes}m · <t:${endedTimestamp}:R>`;
 }
 
-export async function buildRankPayload(user: User, game: Game) {
+const DISPLAYED_DUO_COUNT = 5;
+const DISPLAYED_CHAMPION_POOL_COUNT = 3;
+// The bot is NA-only (see RIOT_PLATFORM); OP.GG wants the region, not platform.
+const OPGG_REGION = "NA";
+// OP.GG returns divisions as numbers; Riot's own payloads use roman numerals,
+// so match the latter for consistency inside one embed.
+const DIVISION_NUMERALS = ["I", "II", "III", "IV"];
+
+function formatQueueRank(rank: SummonerQueueRank): string {
+  const tier = rank.tier.charAt(0) + rank.tier.slice(1).toLowerCase();
+  const numeral = rank.division ? DIVISION_NUMERALS[rank.division - 1] : null;
+  const lp = rank.lp === null ? "" : ` ${rank.lp} LP`;
+  return `${tier}${numeral ? ` ${numeral}` : ""}${lp}`;
+}
+
+function formatChampionPoolLine(champion: SummonerChampion): string {
+  const winRate = Math.round((champion.wins / champion.games) * 100);
+  return `**${champion.championName}** - ${champion.games} games, ${winRate}% win`;
+}
+
+interface DuoRecord {
+  label: string;
+  games: number;
+  wins: number;
+}
+
+// Duo stats only count other players registered with the bot, so this reads as
+// a scoreboard of who in the server wins together.
+async function buildDuoRecords(
+  ownDiscordId: string,
+  matches: MatchSummary[],
+): Promise<DuoRecord[]> {
+  const registrations = await getAllRegistrations();
+
+  const labelByPuuid = new Map<string, string>();
+  for (const [discordId, registration] of Object.entries(registrations)) {
+    if (discordId === ownDiscordId) continue;
+    labelByPuuid.set(
+      registration.puuid,
+      `${registration.gameName}#${registration.tagLine}`,
+    );
+  }
+
+  const recordsByPuuid = new Map<string, DuoRecord>();
+  for (const match of matches) {
+    for (const teammatePuuid of match.teammatePuuids) {
+      const label = labelByPuuid.get(teammatePuuid);
+      if (!label) continue;
+
+      const record = recordsByPuuid.get(teammatePuuid) ?? {
+        label,
+        games: 0,
+        wins: 0,
+      };
+      record.games += 1;
+      if (match.win) record.wins += 1;
+      recordsByPuuid.set(teammatePuuid, record);
+    }
+  }
+
+  return [...recordsByPuuid.values()].sort((a, b) => b.games - a.games);
+}
+
+function formatDuoLine(record: DuoRecord): string {
+  const winRate = Math.round((record.wins / record.games) * 100);
+  const gameLabel = record.games === 1 ? "game" : "games";
+  return `**${record.label}** - ${record.games} ${gameLabel}, ${winRate}% win`;
+}
+
+export interface RankPayloadOptions {
+  // OP.GG's profile snapshot can lag Riot by a while, so the Refresh button
+  // skips it and shows only data pulled live from Riot this instant.
+  includeOpggProfile?: boolean;
+}
+
+export async function buildRankPayload(
+  user: User,
+  game: Game,
+  options: RankPayloadOptions = {},
+) {
+  const includeOpggProfile = options.includeOpggProfile ?? true;
   const discordId = user.id;
   const registration = await getRegistration(discordId);
   if (!registration) {
@@ -61,6 +150,23 @@ export async function buildRankPayload(user: User, game: Game) {
     game === "lol"
       ? getMatchHistory(registration.puuid).catch(() => [] as MatchSummary[])
       : Promise.resolve([] as MatchSummary[]);
+
+  // Supplementary OP.GG data. It is additive, so a failure just means those
+  // fields are omitted rather than the whole embed failing.
+  const profilePromise: Promise<SummonerProfile | null> =
+    includeOpggProfile &&
+    game === "lol" &&
+    registration.gameName &&
+    registration.tagLine
+      ? getSummonerProfile(
+          registration.gameName,
+          registration.tagLine,
+          OPGG_REGION,
+        ).catch((err) => {
+          log("cmd", `OP.GG profile unavailable: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        })
+      : Promise.resolve(null);
 
   let rank;
   try {
@@ -149,8 +255,54 @@ export async function buildRankPayload(user: User, game: Game) {
   if (matches.length > 0) {
     embed.addFields({
       name: "Recent Ranked Games",
-      value: matches.map(formatMatchLine).join("\n"),
+      value: matches
+        .slice(0, DISPLAYED_MATCH_COUNT)
+        .map(formatMatchLine)
+        .join("\n"),
     });
+
+    const duoRecords = await buildDuoRecords(discordId, matches);
+    log(
+      "cmd",
+      `duo stats for ${registration.gameName}: ${duoRecords.length} registered teammate(s) across ${matches.length} match(es)`,
+    );
+    if (duoRecords.length > 0) {
+      embed.addFields({
+        name: `Duos (last ${matches.length} ranked)`,
+        value: duoRecords.slice(0, DISPLAYED_DUO_COUNT).map(formatDuoLine).join("\n"),
+      });
+    }
+  }
+
+  const profile = await profilePromise;
+  if (profile) {
+    if (profile.flexRank) {
+      embed.addFields({
+        name: "Flex",
+        value: formatQueueRank(profile.flexRank),
+        inline: true,
+      });
+    }
+    if (profile.ladder) {
+      const percentile = Math.max(
+        1,
+        Math.round((profile.ladder.rank / profile.ladder.total) * 100),
+      );
+      embed.addFields({
+        name: "Ladder",
+        value: `#${profile.ladder.rank.toLocaleString("en-US")} (top ${percentile}%)`,
+        inline: true,
+      });
+    }
+    if (profile.championPool.length > 0) {
+      embed.addFields({
+        name: "Champion Pool",
+        value: profile.championPool
+          .slice(0, DISPLAYED_CHAMPION_POOL_COUNT)
+          .map(formatChampionPoolLine)
+          .join("\n"),
+      });
+    }
   }
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -174,7 +326,7 @@ export async function handleRankRefresh(
   if (!discordId) {
     await interaction.reply({
       content: "Invalid refresh button.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -184,5 +336,7 @@ export async function handleRankRefresh(
   if (reg) invalidateRank(reg.puuid, game);
 
   const user = await interaction.client.users.fetch(discordId);
-  await interaction.editReply(await buildRankPayload(user, game));
+  await interaction.editReply(
+    await buildRankPayload(user, game, { includeOpggProfile: false }),
+  );
 }

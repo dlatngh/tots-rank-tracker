@@ -10,6 +10,7 @@
 // stale cache when throttled.
 
 import { config } from "./config.ts";
+import { getEsportsSchedule, type OpggEsportsMatch } from "./opgg.ts";
 import { log, logError } from "./log.ts";
 
 export type EsportsGame = "lol" | "valorant";
@@ -288,6 +289,7 @@ export interface League {
   short: string; // display code (e.g. "LCK")
   region: string;
   aliases?: string[]; // extra strings that should resolve to this league
+  opgg?: string; // league key for the OP.GG fallback (see esports-fallback)
 }
 
 // Known leagues per game. `name` MUST match Leaguepedia's `Tournaments.League`
@@ -297,29 +299,38 @@ export interface League {
 // extra request per command, which matters under Fandom's rate limiting.
 const LEAGUES: Record<EsportsGame, League[]> = {
   lol: [
-    { name: "LoL Champions Korea", short: "LCK", region: "Korea" },
-    { name: "Tencent LoL Pro League", short: "LPL", region: "China" },
-    { name: "LoL EMEA Championship", short: "LEC", region: "EMEA" },
+    { name: "LoL Champions Korea", short: "LCK", region: "Korea", opgg: "lck" },
+    { name: "Tencent LoL Pro League", short: "LPL", region: "China", opgg: "lpl" },
+    { name: "LoL EMEA Championship", short: "LEC", region: "EMEA", opgg: "lec" },
     {
       name: "League of Legends Championship of The Americas North",
       short: "LTA N",
       region: "Americas",
+      opgg: "lta north",
       aliases: ["LTA North", "LCS", "NA"],
     },
     {
       name: "League of Legends Championship of The Americas South",
       short: "LTA S",
       region: "Americas",
+      opgg: "lta south",
       aliases: ["LTA South", "CBLOL", "LLA"],
     },
-    { name: "Mid-Season Invitational", short: "MSI", region: "International" },
+    { name: "Mid-Season Invitational", short: "MSI", region: "International", opgg: "msi" },
     {
       name: "World Championship",
       short: "Worlds",
       region: "International",
+      opgg: "worlds",
       aliases: ["WCS"],
     },
-    { name: "First Stand", short: "First Stand", region: "International", aliases: ["FST"] },
+    {
+      name: "First Stand",
+      short: "First Stand",
+      region: "International",
+      aliases: ["FST"],
+      opgg: "first stand",
+    },
   ],
   valorant: [],
 };
@@ -416,6 +427,62 @@ function utcStamp(offsetMs = 0): string {
 
 // Upcoming matches for a league, soonest first. A 2h grace window keeps
 // in-progress series visible rather than dropping off the moment they start.
+
+// -- OP.GG fallback ---------------------------------------------------------
+//
+// Leaguepedia is the primary source: it covers both games and carries the
+// per-game scoreboards. When it is throttled or erroring, fall back to OP.GG's
+// esports schedule so the schedule commands still answer. OP.GG is LoL only.
+
+function toMatchFromOpgg(match: OpggEsportsMatch): Match {
+  const finished = match.status === "FINISHED";
+  const notStarted = match.status === "NOT_STARTED";
+  // Bracket fixtures are scheduled before their teams are known.
+  return {
+    startTime: match.scheduledAt,
+    team1: match.homeTeam?.name ?? "TBD",
+    team2: match.awayTeam?.name ?? "TBD",
+    score1: match.homeScore,
+    score2: match.awayScore,
+    bestOf: match.numberOfGames,
+    live: !finished && !notStarted,
+    tournament: match.league,
+    // OP.GG exposes a match page, not a broadcast link.
+    stream: null,
+  };
+}
+
+async function opggScheduleFallback(
+  game: EsportsGame,
+  direction: "upcoming" | "past",
+  options: { league?: League; team?: TeamRef },
+  cause: unknown,
+): Promise<Match[]> {
+  if (game !== "lol") throw cause;
+  // A league we have no OP.GG key for cannot be filtered server-side, and
+  // returning every league's matches would be wrong rather than merely thin.
+  if (options.league && !options.league.opgg) throw cause;
+
+  log(
+    "esports",
+    `Leaguepedia failed (${cause instanceof Error ? cause.message : String(cause)}); trying OP.GG`,
+  );
+
+  const matches = await getEsportsSchedule({
+    mode: direction === "upcoming" ? "schedule" : "result",
+    league: options.league?.opgg,
+    teamName: options.team?.name,
+  });
+
+  const converted = matches.map(toMatchFromOpgg);
+  converted.sort((a, b) =>
+    direction === "upcoming"
+      ? a.startTime.localeCompare(b.startTime)
+      : b.startTime.localeCompare(a.startTime),
+  );
+  return converted;
+}
+
 export async function getUpcomingMatches(
   game: EsportsGame,
   league: League,
@@ -423,6 +490,8 @@ export async function getUpcomingMatches(
 ): Promise<Match[]> {
   const all = await cachedBatch(upcomingCache, game, league, SCHEDULE_TTL, () =>
     fetchScheduleAll(game, "upcoming"),
+  ).catch((err) =>
+    opggScheduleFallback(game, "upcoming", { league }, err),
   );
   return all.slice(0, limit);
 }
@@ -435,7 +504,7 @@ export async function getPastMatches(
 ): Promise<Match[]> {
   const all = await cachedBatch(pastCache, game, league, SCHEDULE_TTL, () =>
     fetchScheduleAll(game, "past"),
-  );
+  ).catch((err) => opggScheduleFallback(game, "past", { league }, err));
   return all.slice(0, limit);
 }
 
@@ -478,7 +547,10 @@ export async function getTeamUpcomingMatches(
   team: TeamRef,
   limit = 5,
 ): Promise<Match[]> {
-  return (await fetchTeamSchedule(game, team, "upcoming")).slice(0, limit);
+  const matches = await fetchTeamSchedule(game, team, "upcoming").catch((err) =>
+    opggScheduleFallback(game, "upcoming", { team }, err),
+  );
+  return matches.slice(0, limit);
 }
 
 export async function getTeamPastMatches(
@@ -486,7 +558,10 @@ export async function getTeamPastMatches(
   team: TeamRef,
   limit = 5,
 ): Promise<Match[]> {
-  return (await fetchTeamSchedule(game, team, "past")).slice(0, limit);
+  const matches = await fetchTeamSchedule(game, team, "past").catch((err) =>
+    opggScheduleFallback(game, "past", { team }, err),
+  );
+  return matches.slice(0, limit);
 }
 
 // -- Match stats (per-game scoreboard) --------------------------------------

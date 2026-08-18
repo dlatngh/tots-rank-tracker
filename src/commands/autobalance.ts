@@ -7,6 +7,7 @@ import {
   SlashCommandBuilder,
   TextInputBuilder,
   TextInputStyle,
+  MessageFlags,
 } from "discord.js";
 import {
   AutobalanceError,
@@ -85,7 +86,7 @@ export async function handleReroll(interaction: ButtonInteraction) {
     await interaction.reply({
       content:
         "This lobby is no longer cached (the bot may have restarted). Run `/autobalance` again.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }

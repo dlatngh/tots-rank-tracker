@@ -11,6 +11,8 @@ import * as autobalance from "./autobalance.ts";
 import * as subscribe from "./subscribe.ts";
 import * as unsubscribe from "./unsubscribe.ts";
 import * as subscriptions from "./subscriptions.ts";
+import * as champ from "./champ.ts";
+import * as lanemeta from "./lanemeta.ts";
 
 export const commands = {
   register,
@@ -26,4 +28,6 @@ export const commands = {
   subscribe,
   unsubscribe,
   subscriptions,
+  champ,
+  lanemeta,
 };
