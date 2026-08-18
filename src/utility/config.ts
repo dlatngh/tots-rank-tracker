@@ -15,6 +15,15 @@ export const config = {
   guildId: process.env.DISCORD_GUILD_ID ?? "",
   riotApiKey: required("RIOT_API_KEY"),
   henrikApiKey: required("HENRIK_API_KEY"),
+  // Optional Fandom bot-password credentials (Special:BotPasswords). When set,
+  // the esports client logs in to lift Leaguepedia's ~1 req/min anonymous rate
+  // limit. Username is "MainAccount@BotName"; password is the generated string.
+  leaguepediaUsername: process.env.LEAGUEPEDIA_USERNAME ?? "",
+  leaguepediaPassword: process.env.LEAGUEPEDIA_PASSWORD ?? "",
+  // LoL autobalancer web app. Override WEB_APP_BASE_URL to point at a local dev
+  // server (http://localhost:3000) while testing.
+  webAppBaseUrl: process.env.WEB_APP_BASE_URL ?? "https://autobalance.lol",
+  botSharedSecret: required("BOT_SHARED_SECRET"),
 };
 
 // Region routing (NA). See https://developer.riotgames.com/docs/lol#routing-values

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun --watch run index.ts",
-    "deploy": "bun run src/deploy-commands.ts",
+    "deploy": "bun run src/utility/deploy-commands.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

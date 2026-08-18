@@ -9,6 +9,7 @@ const COLORS: Record<string, string> = {
   henrik: "\x1b[32m", // green
   cache: "\x1b[34m", // blue
   valapi: "\x1b[90m", // gray
+  esports: "\x1b[33m", // yellow
 };
 
 function color(tag: string): string {

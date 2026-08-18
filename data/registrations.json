@@ -3,22 +3,21 @@
     "puuid": "uegL7c5-k-xtdGJLd5ZXAo50THICvs0FC_InTsk11rcoHhaoMIBV_dMetEcH1HVzgVufDDF6VqFG2Q",
     "updatedAt": "2026-06-05T03:05:22.464Z",
     "division": "lower",
-    "gameName": "Kipinä",
+    "gameName": "Esquie",
     "tagLine": "T1WIN"
   },
   "195352519155777536": {
-    "puuid": "axgncboz2S6mV8pPpb7OQj5wCGGs452qbrTUsMETMMM1MySi9MlZzTxAgoe7tnkuhWuKJwen9Tz5Mw",
-    "updatedAt": "2026-06-05T03:05:51.768Z",
-    "division": "upper",
-    "gameName": "hatsune miku",
-    "tagLine": "yhl"
+    "puuid": "Ofx259MLy1o2HFkIB3hTGqfYOnixu3wv0i2pH029dAMJXNZh_ItUsytcxdWTRi39iaSF9X7kx5z3tg",
+    "updatedAt": "2026-06-16T21:50:47.811Z",
+    "gameName": "awn",
+    "tagLine": "1004"
   },
   "361632242629476352": {
     "puuid": "jbI3BzympX1QjnyW9V1rf-0IJpQStIHXbKJobrz1M3fz_MPjFMNjJKcgGA-0bDXfA5GHBSe4z3cxDA",
     "updatedAt": "2026-06-05T03:07:41.591Z",
-    "division": "lower",
     "gameName": "wari",
-    "tagLine": "4272"
+    "tagLine": "4272",
+    "division": "lower"
   },
   "342438633669787648": {
     "puuid": "XmYeVc6c_yRfkFeqoKTJqqE7ZPM64vtMFUwBRkHOf7iN2WxZionWo2Bv2uMjePMMZ6Ze33_S6RkHkQ",
@@ -37,16 +36,16 @@
   "601075077542313984": {
     "puuid": "NCCimeuimip8KpcQpXgIIkfn21qDpLRZiNuoxdDc1rQAAY9SJFsCGCumqO0hFw638RTbppYuc5WccA",
     "updatedAt": "2026-06-05T03:10:14.112Z",
-    "division": "lower",
+    "division": "upper",
     "gameName": "domothelama",
     "tagLine": "Mori"
   },
   "495998386609324042": {
     "puuid": "aZ7JdaSU0hGcL0Ik8xy1w4vJThL7UyMZN42fjSSP7RZLBPBelTpqqGkJbJBU5LEowV6S8KSKJ2lTqQ",
     "updatedAt": "2026-06-05T03:11:24.897Z",
-    "division": "upper",
     "gameName": "soju lovewatcher",
-    "tagLine": "muppt"
+    "tagLine": "muppt",
+    "division": "upper"
   },
   "525845698143584256": {
     "puuid": "shcU3W40hmqsQ40QXT5dHRz5Q72Q-XxsQjCOOr8qL8lkrfjYNuPpZJbo9WzkC0qKCpxui7NzhaOKHg",
@@ -72,14 +71,63 @@
   "259810841988300800": {
     "puuid": "kDFMvNEhMRiyJzhWItQ_A1DSAy-pSfJM_F5rBocael0tMtBf-t2Xsvs5ML4hkBEMn3V1Xk-BcEYunw",
     "updatedAt": "2026-06-05T03:16:54.807Z",
-    "division": "upper",
     "gameName": "Wink XY",
-    "tagLine": "黄霄云"
+    "tagLine": "黄霄云",
+    "division": "upper"
   },
   "630077110538469396": {
-    "puuid": "f8Fd845UuH4IfkHdgk4DmmD89wSzBCuW2Vuf978rvPyF5gNyvWg0QKu2wDaS364foHPartABf1uF3A",
-    "updatedAt": "2026-06-05T03:17:38.154Z",
-    "gameName": "xela",
-    "tagLine": "keny"
+    "puuid": "KBl3P0crkFJ3HPctAo4L5fVp7rtWMnCa27H0A1WoSpvTTn6jX06hsr3h8nk3ynTGiDBG_UrhBOWKxQ",
+    "updatedAt": "2026-06-16T21:42:51.895Z",
+    "gameName": "SparkLOL",
+    "tagLine": "1V9"
+  },
+  "701114503752056972": {
+    "puuid": "otnI6bzjNgX4PACICkMxY-8mQEs8GN8105h6JsukZ0cAKFVQyCFKs0dI8ckdOmGCVL1UnAs1gEJfCA",
+    "updatedAt": "2026-06-06T04:47:22.385Z",
+    "gameName": "soap",
+    "tagLine": "boxz",
+    "division": "lower"
+  },
+  "244242588004122626": {
+    "puuid": "N983I-2COoWQD4CIWn_1IiJK6iq7ns9QoT2mH6tDL9kQ8yuU3mhpcuEmK2j_FqZBc_hDET526WIqBQ",
+    "updatedAt": "2026-06-07T10:14:39.502Z",
+    "gameName": "jynxzi",
+    "tagLine": "mvp",
+    "division": "lower"
+  },
+  "795830602795843645": {
+    "puuid": "DzFFL4WVEF_JIlaEu9xKDzEuqhb-5zwmerYbhFbY2YRn96tUJ7hSY13Pzg7ZLQTktLBOGiXG0q6NHA",
+    "updatedAt": "2026-06-07T10:16:25.376Z",
+    "gameName": "OtterSleep",
+    "tagLine": "Tiяed",
+    "division": "lower"
+  },
+  "796116445092249610": {
+    "puuid": "NJGTcnRZvj5COZbPGR1X4msRnhmAW7wi-cyR7M6XUHNqUX8_ZXQ1e5lbaBPs7evEqkcP-x9LaOQQgA",
+    "updatedAt": "2026-06-08T02:56:58.721Z",
+    "division": "lower",
+    "gameName": "Bigot Sandwich",
+    "tagLine": "Focks"
+  },
+  "246740463917203456": {
+    "puuid": "9-6abw49ktDjEryREMv4vX3UXl2TEhSsRl46lAKgoJ9AI8JWL6FI5k8jpetJ8e2Dl1ghI2rLnaUnUQ",
+    "updatedAt": "2026-06-08T03:05:56.003Z",
+    "division": "upper",
+    "gameName": "AndyValeron",
+    "tagLine": "Swag"
+  },
+  "1516388945221521572": {
+    "puuid": "axgncboz2S6mV8pPpb7OQj5wCGGs452qbrTUsMETMMM1MySi9MlZzTxAgoe7tnkuhWuKJwen9Tz5Mw",
+    "updatedAt": "2026-07-29T08:23:38.790Z",
+    "division": "upper",
+    "gameName": "hatsune miku",
+    "tagLine": "yhl"
+  },
+  "328323700556562433": {
+    "puuid": "lGzMC5Qva1dhixjQmlcep7huxnCWJ8561tlJAuZ5HQchnXChegUBPSwAqg6P2YaOpyozmqqL9_k-5Q",
+    "updatedAt": "2026-07-05T00:55:45.072Z",
+    "gameName": "GumbaYum",
+    "tagLine": "NA1",
+    "division": "lower"
   }
 }

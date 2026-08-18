@@ -5,6 +5,8 @@ import * as leaderboard from "./leaderboard.ts";
 import * as division from "./division.ts";
 import * as game from "./game.ts";
 import * as sun from "./sun.ts";
+import * as esports from "./esports.ts";
+import * as autobalance from "./autobalance.ts";
 
 export const commands = {
   register,
@@ -14,4 +16,6 @@ export const commands = {
   division,
   game,
   sun,
+  esports,
+  autobalance,
 };

@@ -19,6 +19,20 @@ client.once(Events.ClientReady, async (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    const command = commands[interaction.commandName as keyof typeof commands];
+    if (command && "autocomplete" in command) {
+      try {
+        await (command.autocomplete as (i: typeof interaction) => Promise<void>)(
+          interaction,
+        );
+      } catch (err) {
+        logError("cmd", `Autocomplete error for /${interaction.commandName}:`, err);
+      }
+    }
+    return;
+  }
+
   if (interaction.isChatInputCommand()) {
     const command = commands[interaction.commandName as keyof typeof commands];
     if (!command) return;
@@ -49,6 +63,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
 
+  if (interaction.isModalSubmit()) {
+    const [namespace] = interaction.customId.split(":");
+    const started = Date.now();
+    log("cmd", `modal ${interaction.customId} by ${interaction.user.tag}`);
+    try {
+      if (namespace === "autobalance") {
+        await commands.autobalance.handleModal(interaction);
+      }
+      log("cmd", `modal ${interaction.customId} done (${Date.now() - started}ms)`);
+    } catch (err) {
+      logError("cmd", `Error handling modal ${interaction.customId}:`, err);
+      const msg = "I cant do it my sodium is too high.";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(msg).catch(() => {});
+      } else {
+        await interaction
+          .reply({ content: msg, ephemeral: true })
+          .catch(() => {});
+      }
+    }
+    return;
+  }
+
   if (interaction.isButton()) {
     const [namespace] = interaction.customId.split(":");
     const started = Date.now();
@@ -60,6 +97,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await commands.val.handleRefresh(interaction);
       } else if (namespace === "leaderboard") {
         await commands.leaderboard.handleRefresh(interaction);
+      } else if (namespace === "autobalance") {
+        await commands.autobalance.handleReroll(interaction);
       }
       log("btn", `${interaction.customId} done (${Date.now() - started}ms)`);
     } catch (err) {
