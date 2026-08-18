@@ -10,6 +10,7 @@ import {
 } from "discord.js";
 import {
   formatRank,
+  getMatchHistory,
   getRank,
   invalidateRank,
   peekRank,
@@ -18,13 +19,30 @@ import {
   RiotApiError,
   tierColor,
   type Game,
+  type MatchSummary,
 } from "./riot.ts";
 import { getAllRegistrations, getRegistration, updateRiotId } from "./storage.ts";
+import { getSoloLpDelta, type LpDelta } from "./rank-history.ts";
 
 const GAME_LABELS: Record<Game, string> = {
   lol: "Solo/Duo",
   val: "Valorant",
 };
+
+function formatLpDelta(delta: LpDelta): string {
+  const timeframe = delta.since === "today" ? "today" : "recently";
+  if (delta.amount > 0) return `📈 +${delta.amount} LP ${timeframe}`;
+  if (delta.amount < 0) return `📉 ${delta.amount} LP ${timeframe}`;
+  return `➖ 0 LP ${timeframe}`;
+}
+
+function formatMatchLine(match: MatchSummary): string {
+  const outcome = match.win ? "✅" : "❌";
+  const kda = `${match.kills}/${match.deaths}/${match.assists}`;
+  const durationMinutes = Math.round(match.durationSec / 60);
+  const endedTimestamp = Math.floor(match.endedAt / 1000);
+  return `${outcome} **${match.championName}** ${kda} · ${durationMinutes}m · <t:${endedTimestamp}:R>`;
+}
 
 export async function buildRankPayload(user: User, game: Game) {
   const discordId = user.id;
@@ -36,6 +54,13 @@ export async function buildRankPayload(user: User, game: Game) {
       components: [],
     };
   }
+
+  // Kick off match history alongside the rank fetch so the extra match-v5
+  // calls overlap with the rank lookup instead of adding latency in series.
+  const matchHistoryPromise =
+    game === "lol"
+      ? getMatchHistory(registration.puuid).catch(() => [] as MatchSummary[])
+      : Promise.resolve([] as MatchSummary[]);
 
   let rank;
   try {
@@ -102,6 +127,9 @@ export async function buildRankPayload(user: User, game: Game) {
     .setDescription(`Last refreshed <t:${refreshedTs}:R>`)
     .setFooter({ text: footer });
 
+  const lpDelta =
+    game === "lol" ? await getSoloLpDelta(registration.puuid, rank) : null;
+
   if (rank.tier) {
     embed.setColor(tierColor(rank.tier)).setTitle(formatRank(rank));
     if (rank.rankIconUrl) embed.setThumbnail(rank.rankIconUrl);
@@ -110,8 +138,19 @@ export async function buildRankPayload(user: User, game: Game) {
       { name: "Losses", value: String(rank.losses), inline: true },
       { name: "Win Rate", value: `${winRate}%`, inline: true },
     );
+    if (lpDelta) {
+      embed.addFields({ name: "LP Change", value: formatLpDelta(lpDelta), inline: true });
+    }
   } else {
     embed.setColor(0x5865f2).setTitle(`Unranked in ${GAME_LABELS[game]}`);
+  }
+
+  const matches = await matchHistoryPromise;
+  if (matches.length > 0) {
+    embed.addFields({
+      name: "Recent Ranked Games",
+      value: matches.map(formatMatchLine).join("\n"),
+    });
   }
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(

@@ -24,6 +24,17 @@ export const config = {
   // server (http://localhost:3000) while testing.
   webAppBaseUrl: process.env.WEB_APP_BASE_URL ?? "https://autobalance.lol",
   botSharedSecret: required("BOT_SHARED_SECRET"),
+  // Optional: channel the champion patch-change notifier posts to. When unset,
+  // the notifier stays dormant (subscriptions still work, just no auto-pings).
+  patchNotesChannelId: process.env.PATCH_NOTES_CHANNEL_ID ?? "",
+  // Port the bot listens on for the patch watcher's webhook (see
+  // scripts/patch-watcher.ts). Authenticated with botSharedSecret.
+  patchWebhookPort: Number(process.env.PATCH_WEBHOOK_PORT ?? 8787),
+  // Optional: channel for patch-watcher crash alerts. Falls back to the patch
+  // channel when unset.
+  alertChannelId: process.env.ALERT_CHANNEL_ID ?? "",
+  // Optional: user pinged on a patch-watcher crash alert so an operator sees it.
+  alertMentionUserId: process.env.ALERT_MENTION_USER_ID ?? "",
 };
 
 // Region routing (NA). See https://developer.riotgames.com/docs/lol#routing-values

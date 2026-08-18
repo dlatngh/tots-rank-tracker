@@ -111,6 +111,30 @@ export async function updateRiotId(
 }
 
 /**
+ * Remove a user's registration entirely. Returns the deleted PUUID (or
+ * undefined if the user wasn't registered) so callers can clear related caches.
+ */
+export async function deleteRegistration(
+  discordId: string,
+): Promise<{ puuid?: string }> {
+  let puuid: string | undefined;
+
+  const task = writeQueue.then(async () => {
+    const store = await read();
+    const existing = store[discordId];
+    if (!existing) return;
+    puuid = existing.puuid;
+    delete store[discordId];
+    await write(store);
+  });
+
+  writeQueue = task.catch(() => {});
+  await task;
+
+  return { puuid };
+}
+
+/**
  * Update only the division for a user. Returns the previous division (or
  * undefined). Throws if the user isn't registered.
  */

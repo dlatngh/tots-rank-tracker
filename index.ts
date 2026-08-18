@@ -2,6 +2,8 @@ import { Client, Events, GatewayIntentBits } from "discord.js";
 import { config } from "./src/utility/config.ts";
 import { commands } from "./src/commands/index.ts";
 import { registerCommands } from "./src/utility/deploy-commands.ts";
+import { startDailySnapshotScheduler } from "./src/utility/rank-history.ts";
+import { startPatchWebhook } from "./src/utility/patch-webhook.ts";
 import { log, logError } from "./src/utility/log.ts";
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -16,6 +18,9 @@ client.once(Events.ClientReady, async (c) => {
       console.error("Auto command registration failed:", err),
     );
   }
+
+  startDailySnapshotScheduler();
+  startPatchWebhook(c);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {

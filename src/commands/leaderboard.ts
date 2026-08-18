@@ -16,6 +16,7 @@ import {
   type GameRank,
 } from "../utility/riot.ts";
 import { getAllRegistrations, updateRiotId, type Division } from "../utility/storage.ts";
+import { getSoloLpDeltaMap, type LpDelta } from "../utility/rank-history.ts";
 
 export const data = new SlashCommandBuilder()
   .setName("leaderboard")
@@ -42,7 +43,14 @@ export const REFRESH_ID = "leaderboard:refresh";
 
 interface Entry {
   discordId: string;
+  puuid: string;
   rank: GameRank;
+}
+
+function climbTag(delta: LpDelta | undefined): string {
+  if (!delta || delta.amount === 0) return "";
+  const arrow = delta.amount > 0 ? "▲" : "▼";
+  return ` ${arrow}${Math.abs(delta.amount)}`;
 }
 
 const GAME_LABELS: Record<Game, string> = {
@@ -104,7 +112,7 @@ async function buildLeaderboardPayload(game: Game, division: Division | null) {
       if (rank.gameName !== reg.gameName || rank.tagLine !== reg.tagLine) {
         void updateRiotId(reg.discordId, rank.gameName, rank.tagLine);
       }
-      return { discordId: reg.discordId, rank };
+      return { discordId: reg.discordId, puuid: reg.puuid, rank };
     }),
   );
 
@@ -117,8 +125,13 @@ async function buildLeaderboardPayload(game: Game, division: Division | null) {
 
   entries.sort((a, b) => rankScore(b.rank) - rankScore(a.rank));
 
+  // Climb indicators only apply to LoL (Valorant RR isn't snapshotted).
+  const deltas =
+    game === "lol" ? await getSoloLpDeltaMap(entries) : new Map<string, LpDelta>();
+
   const lines = entries.map((e, i) => {
-    return `\`${String(i + 1).padStart(2, " ")}.\` <@${e.discordId}> | ${formatRank(e.rank)}`;
+    const position = String(i + 1).padStart(2, " ");
+    return `\`${position}.\` <@${e.discordId}> | ${formatRank(e.rank)}${climbTag(deltas.get(e.puuid))}`;
   });
 
   const embed = new EmbedBuilder()

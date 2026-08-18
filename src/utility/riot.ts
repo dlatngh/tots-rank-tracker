@@ -205,6 +205,46 @@ async function ddragonVersion(): Promise<string> {
   return ddragonVersionPromise;
 }
 
+export interface Champion {
+  id: string; // Data Dragon id, e.g. "MonkeyKing"
+  name: string; // display name, e.g. "Wukong"
+}
+
+// Champion roster from Data Dragon, cached for the process lifetime (the roster
+// only changes when Riot ships a new champion). Used for subscription
+// autocomplete and to validate champion names parsed out of patch notes.
+let championsPromise: Promise<Champion[]> | null = null;
+
+export async function getChampions(): Promise<Champion[]> {
+  if (!championsPromise) {
+    championsPromise = (async () => {
+      const version = await ddragonVersion();
+      const res = await fetch(
+        `https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/champion.json`,
+      );
+      const json = (await res.json()) as {
+        data: Record<string, { id: string; name: string }>;
+      };
+      return Object.values(json.data).map((c) => ({ id: c.id, name: c.name }));
+    })().catch((err) => {
+      championsPromise = null;
+      throw err;
+    });
+  }
+  return championsPromise;
+}
+
+export async function championIconUrl(championId: string): Promise<string> {
+  const version = await ddragonVersion();
+  return `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${championId}.png`;
+}
+
+// Collapse a champion name to a comparison key so patch-note headings match the
+// roster regardless of punctuation/spacing (e.g. "Nunu & Willump", "Kai'Sa").
+export function normalizeChampionName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 function rankEmblemUrl(tier: string): string {
   // OPGG's CDN hosts clean PNG emblems for all LoL tiers and is widely used.
   return `https://opgg-static.akamaized.net/images/medals_new/${tier.toLowerCase()}.png`;
@@ -238,6 +278,101 @@ async function fetchLolRank(puuid: string): Promise<GameRank> {
     summonerLevel: summoner.summonerLevel,
     fetchedAt: Date.now(),
   };
+}
+
+// -- LoL match history ------------------------------------------------------
+
+// Ranked Solo/Duo queue id, used to filter match-v5 to ranked games only.
+const RANKED_SOLO_QUEUE = 420;
+const MATCH_HISTORY_COUNT = 5;
+
+export interface MatchSummary {
+  championName: string;
+  kills: number;
+  deaths: number;
+  assists: number;
+  win: boolean;
+  durationSec: number;
+  endedAt: number; // unix ms
+}
+
+interface MatchV5Response {
+  info: {
+    gameDuration: number; // seconds (post-patch 11.20)
+    gameStartTimestamp: number;
+    gameEndTimestamp?: number;
+    participants: Array<{
+      puuid: string;
+      championName: string;
+      kills: number;
+      deaths: number;
+      assists: number;
+      win: boolean;
+    }>;
+  };
+}
+
+// Match history is fetched separately from rank and kept in a lightweight
+// in-memory cache (no disk persistence — it's cheap to refetch on restart).
+// Cleared alongside the LoL rank when a user hits Refresh.
+const matchCache = new Map<string, Promise<MatchSummary[]>>();
+
+async function fetchMatchHistory(puuid: string): Promise<MatchSummary[]> {
+  const ids = await riotFetch<string[]>(
+    `https://${RIOT_REGION}.api.riotgames.com/lol/match/v5/matches/by-puuid/` +
+      `${encodeURIComponent(puuid)}/ids?queue=${RANKED_SOLO_QUEUE}&start=0&count=${MATCH_HISTORY_COUNT}`,
+  );
+
+  const matches = await Promise.all(
+    ids.map((id) =>
+      riotFetch<MatchV5Response>(
+        `https://${RIOT_REGION}.api.riotgames.com/lol/match/v5/matches/${encodeURIComponent(id)}`,
+      ),
+    ),
+  );
+
+  const summaries: MatchSummary[] = [];
+  for (const match of matches) {
+    const me = match.info.participants.find((p) => p.puuid === puuid);
+    if (!me) continue;
+    const endedAt =
+      match.info.gameEndTimestamp ??
+      match.info.gameStartTimestamp + match.info.gameDuration * 1000;
+    summaries.push({
+      championName: me.championName,
+      kills: me.kills,
+      deaths: me.deaths,
+      assists: me.assists,
+      win: me.win,
+      durationSec: match.info.gameDuration,
+      endedAt,
+    });
+  }
+  return summaries;
+}
+
+export function getMatchHistory(puuid: string): Promise<MatchSummary[]> {
+  const short = `matches:${puuid.slice(0, 8)}`;
+  const cached = matchCache.get(puuid);
+  if (cached) {
+    log("cache", `hit ${short}`);
+    return cached;
+  }
+
+  log("cache", `miss ${short} — fetching`);
+  const promise = fetchMatchHistory(puuid);
+  matchCache.set(puuid, promise);
+  promise.catch(() => {
+    log("cache", `evicting ${short} after failed fetch`);
+    matchCache.delete(puuid);
+  });
+  return promise;
+}
+
+export function invalidateMatchHistory(puuid: string): void {
+  if (matchCache.delete(puuid)) {
+    log("cache", `invalidated matches:${puuid.slice(0, 8)}`);
+  }
 }
 
 // -- Valorant via HenrikDev -------------------------------------------------
@@ -506,6 +641,7 @@ export function invalidateRank(puuid: string, game?: Game): void {
       scheduleCacheFlush();
     }
   }
+  if (games.includes("lol")) invalidateMatchHistory(puuid);
 }
 
 export interface RankHint {
@@ -567,6 +703,39 @@ const VAL_TIER_ORDER = [
   "RADIANT",
 ];
 const VAL_DIVISION_ORDER = ["1", "2", "3"];
+
+const LOL_APEX_TIERS = new Set(["MASTER", "GRANDMASTER", "CHALLENGER"]);
+const LP_PER_DIVISION = 100;
+
+/**
+ * Approximate a solo/duo rank as a single cumulative LP number, treating each
+ * division as 100 LP so gains across division/tier boundaries still read as one
+ * LP figure (the convention op.gg-style trackers use). Master and above share a
+ * single continuous LP pool stacked on top of Diamond I. Returns null for
+ * unranked (no meaningful LP baseline to diff against).
+ */
+export function cumulativeSoloLp(rank: GameRank): number | null {
+  if (rank.game !== "lol" || !rank.tier) return null;
+
+  const divisionsPerTier = LOL_DIVISION_ORDER.length;
+  const masterFloor =
+    LOL_TIER_ORDER.indexOf("MASTER") * divisionsPerTier * LP_PER_DIVISION;
+
+  if (LOL_APEX_TIERS.has(rank.tier)) {
+    return masterFloor + rank.points;
+  }
+
+  const tierIndex = LOL_TIER_ORDER.indexOf(rank.tier);
+  if (tierIndex < 0) return null;
+  const divisionIndex = rank.division
+    ? LOL_DIVISION_ORDER.indexOf(rank.division)
+    : 0;
+  return (
+    tierIndex * divisionsPerTier * LP_PER_DIVISION +
+    divisionIndex * LP_PER_DIVISION +
+    rank.points
+  );
+}
 
 export function rankScore(r: GameRank): number {
   if (!r.tier) return -1;
