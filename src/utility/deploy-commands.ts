@@ -7,13 +7,13 @@
 // Otherwise they register globally (can take up to ~1 hour to propagate).
 
 import { REST, Routes } from "discord.js";
-import { commands } from "../commands/index.ts";
+import { allCommandData } from "../commands/index.ts";
 import { config } from "./config.ts";
 
 const rest = new REST({ version: "10" }).setToken(config.discordToken);
 
 export async function registerCommands(): Promise<void> {
-  const commandsData = Object.values(commands).map((c) => c.data.toJSON());
+  const commandsData = allCommandData.map((data) => data.toJSON());
 
   const route = config.guildId
     ? Routes.applicationGuildCommands(config.clientId, config.guildId)

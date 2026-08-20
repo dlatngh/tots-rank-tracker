@@ -11,8 +11,8 @@ import {
   claimRefill,
   CURRENCY_NAME,
   endRound,
-  getBalance,
   getLeaderboard,
+  getRecord,
   getRound,
   lockRound,
   placeBet,
@@ -21,8 +21,10 @@ import {
   TEAM_LABELS,
   type BetTeam,
   type BettingRound,
+  type BettorRecord,
 } from "../utility/betting.ts";
 import {
+  addMatchSummary,
   buildResultEmbed,
   buildRoundEmbed,
   formatPools,
@@ -133,6 +135,7 @@ async function openRound(
     guildId,
     gameNumber,
     teamRosters: match.teams,
+    teamMmr: match.teamMmr,
   });
 }
 
@@ -199,7 +202,7 @@ async function resolveRound(
   }
 
   await interaction.editReply({
-    embeds: [buildResultEmbed(round, winner, payout)],
+    embeds: [addMatchSummary(buildResultEmbed(round, winner, payout), outcome)],
   });
 }
 
@@ -220,6 +223,18 @@ async function showStatus(interaction: ChatInputCommandInteraction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+function formatStreak(streak: number): string {
+  if (streak >= 2) return ` · ${streak} in a row`;
+  if (streak <= -2) return ` · ${-streak} straight losses`;
+  return "";
+}
+
+function formatRecord(record: BettorRecord): string {
+  if (record.wins + record.losses === 0) return "No bets settled yet.";
+  const biggest = record.biggestWin > 0 ? ` · best +${record.biggestWin}` : "";
+  return `${record.wins}W-${record.losses}L${biggest}${formatStreak(record.streak)}`;
+}
+
 async function showStandings(interaction: ChatInputCommandInteraction) {
   const standings = await getLeaderboard();
   if (standings.length === 0) {
@@ -233,7 +248,7 @@ async function showStandings(interaction: ChatInputCommandInteraction) {
     .slice(0, DISPLAYED_STANDINGS_COUNT)
     .map(
       (entry, index) =>
-        `${index + 1}. <@${entry.discordId}> - ${entry.balance} ${CURRENCY_NAME}`,
+        `${index + 1}. <@${entry.discordId}> - ${entry.balance} ${CURRENCY_NAME} · ${formatRecord(entry)}`,
     );
 
   const embed = new EmbedBuilder()
@@ -319,9 +334,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
       case "balance": {
         const user = interaction.options.getUser("user") ?? interaction.user;
-        const balance = await getBalance(user.id);
+        const record = await getRecord(user.id);
         await interaction.editReply(
-          `<@${user.id}> has ${balance} ${CURRENCY_NAME}.`,
+          `<@${user.id}> has ${record.balance} ${CURRENCY_NAME}. ${formatRecord(record)}`,
         );
         return;
       }

@@ -244,6 +244,45 @@ export async function itemIconUrl(itemId: number): Promise<string> {
   return `https://ddragon.leagueoflegends.com/cdn/${version}/img/item/${itemId}.png`;
 }
 
+// Rune icons come from Data Dragon's reforged-runes file, which nests each
+// rune under its style. OP.GG names its runes the same way, so the map is keyed
+// by name. Cached for the process lifetime, like the champion roster.
+let runeIconsPromise: Promise<Map<string, string>> | null = null;
+
+interface RuneStyle {
+  name: string;
+  icon: string;
+  slots: Array<{ runes: Array<{ name: string; icon: string }> }>;
+}
+
+export async function getRuneIcons(): Promise<Map<string, string>> {
+  if (!runeIconsPromise) {
+    runeIconsPromise = (async () => {
+      const version = await ddragonVersion();
+      const res = await fetch(
+        `https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/runesReforged.json`,
+      );
+      const styles = (await res.json()) as RuneStyle[];
+
+      const icons = new Map<string, string>();
+      const base = "https://ddragon.leagueoflegends.com/cdn/img/";
+      for (const style of styles) {
+        icons.set(style.name, `${base}${style.icon}`);
+        for (const slot of style.slots) {
+          for (const rune of slot.runes) {
+            icons.set(rune.name, `${base}${rune.icon}`);
+          }
+        }
+      }
+      return icons;
+    })().catch((err) => {
+      runeIconsPromise = null;
+      throw err;
+    });
+  }
+  return runeIconsPromise;
+}
+
 // Collapse a champion name to a comparison key so patch-note headings match the
 // roster regardless of punctuation/spacing (e.g. "Nunu & Willump", "Kai'Sa").
 export function normalizeChampionName(name: string): string {

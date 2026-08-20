@@ -15,6 +15,7 @@ import * as champ from "./champ.ts";
 import * as lanemeta from "./lanemeta.ts";
 import * as bet from "./bet.ts";
 import * as quote from "./quote.ts";
+import * as quoteMessage from "./quote-message.ts";
 
 export const commands = {
   register,
@@ -35,3 +36,14 @@ export const commands = {
   bet,
   quote,
 };
+
+// Right-click actions are dispatched separately from slash commands: they carry
+// a different interaction type, and Discord matches them by their display name.
+export const contextMenuCommands = {
+  quoteMessage,
+};
+
+export const allCommandData = [
+  ...Object.values(commands),
+  ...Object.values(contextMenuCommands),
+].map((command) => command.data);

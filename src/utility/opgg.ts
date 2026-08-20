@@ -349,12 +349,30 @@ export interface ItemSet {
   pickRate: number;
 }
 
+export interface RunePage {
+  primaryPage: string;
+  primaryRunes: string[];
+  secondaryPage: string;
+  secondaryRunes: string[];
+  winRate: number;
+  pickRate: number;
+}
+
+// The order abilities are levelled to their maximum, e.g. Q then W then E.
+export interface SkillOrder {
+  skills: string[];
+  winRate: number;
+  pickRate: number;
+}
+
 export interface ChampionBuild {
   starterItems: ItemSet | null;
   boots: ItemSet | null;
   coreItems: ItemSet | null;
   // Most popular single item at each of the fourth, fifth, and sixth slots.
   situationalItems: ItemSet[];
+  runes: RunePage | null;
+  skillOrder: SkillOrder | null;
 }
 
 export interface ChampionRates {
@@ -470,6 +488,8 @@ const LANE_SPECIFIC_FIELDS = [
   "data.fourth_items[].{ids[],ids_names[],pick_rate,play,win}",
   "data.fifth_items[].{ids[],ids_names[],pick_rate,play,win}",
   "data.sixth_items[].{ids[],ids_names[],pick_rate,play,win}",
+  "data.runes.{primary_page_name,primary_rune_names[],secondary_page_name,secondary_rune_names[],pick_rate,play,win}",
+  "data.skill_masteries.{ids[],pick_rate,play,win}",
 ];
 
 function decodeCounters(raw: unknown): CounterMatchup[] {
@@ -509,6 +529,30 @@ function decodeMostBuiltItem(raw: unknown, takenItemIds: Set<number>): ItemSet |
   return null;
 }
 
+function decodeRunes(raw: unknown): RunePage | null {
+  const entry = raw as Record<string, any> | null | undefined;
+  if (!entry?.primary_page_name || !entry.play) return null;
+  return {
+    primaryPage: entry.primary_page_name,
+    primaryRunes: (entry.primary_rune_names ?? []) as string[],
+    secondaryPage: entry.secondary_page_name ?? "",
+    secondaryRunes: (entry.secondary_rune_names ?? []) as string[],
+    winRate: entry.win / entry.play,
+    pickRate: entry.pick_rate,
+  };
+}
+
+function decodeSkillOrder(raw: unknown): SkillOrder | null {
+  const entry = raw as Record<string, any> | null | undefined;
+  const skills = entry?.ids as string[] | undefined;
+  if (!entry || !skills?.length || !entry.play) return null;
+  return {
+    skills,
+    winRate: entry.win / entry.play,
+    pickRate: entry.pick_rate,
+  };
+}
+
 function decodeBuild(source: any): ChampionBuild {
   const situationalSlots = [
     source?.data?.fourth_items,
@@ -529,6 +573,8 @@ function decodeBuild(source: any): ChampionBuild {
     boots: decodeItemSet(source?.data?.boots),
     coreItems: decodeItemSet(source?.data?.core_items),
     situationalItems,
+    runes: decodeRunes(source?.data?.runes),
+    skillOrder: decodeSkillOrder(source?.data?.skill_masteries),
   };
 }
 

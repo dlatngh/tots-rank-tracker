@@ -18,6 +18,9 @@ export interface NeatQueueTeams {
   gameNumber: number;
   // Player display names, one array per team, in NeatQueue's team order.
   teams: string[][];
+  // Mean NeatQueue MMR per team, in the same order. Null for a team whose
+  // players have no rating yet.
+  teamMmr: Array<number | null>;
   // The channel NeatQueue made for the game, when its payload names one.
   channelId: string | null;
 }
@@ -80,6 +83,22 @@ function channelIdOf(match: Record<string, any>): string | null {
   return null;
 }
 
+// NeatQueue rates every player, so the average is what a lobby would call the
+// stronger side. Players it has not rated yet are left out of the mean rather
+// than counted as zero.
+function teamAverageMmr(match: Record<string, any>): Array<number | null> {
+  if (!Array.isArray(match.teams)) return [];
+
+  return match.teams.map((team: unknown) => {
+    if (!Array.isArray(team)) return null;
+    const ratings = team
+      .map((player: any) => player?.mmr)
+      .filter((mmr: unknown): mmr is number => typeof mmr === "number");
+    if (ratings.length === 0) return null;
+    return ratings.reduce((total, mmr) => total + mmr, 0) / ratings.length;
+  });
+}
+
 function teamRosters(match: Record<string, any>): string[][] {
   if (!Array.isArray(match.teams)) return [];
   return match.teams.map(playerNames);
@@ -100,6 +119,7 @@ export async function listActiveMatches(
     live.push({
       gameNumber,
       teams: teamRosters(match),
+      teamMmr: teamAverageMmr(match),
       channelId: channelIdOf(match),
     });
   }
@@ -146,6 +166,14 @@ export async function listQueueChannels(serverId: string): Promise<string[]> {
   return payload.map(([channelId]) => channelId);
 }
 
+export interface NeatQueuePlayer {
+  id: string;
+  name: string;
+  teamIndex: number;
+  // What the game did to their rating. Null when NeatQueue recorded none.
+  mmrChange: number | null;
+}
+
 // A game is either still going, cancelled, or won by one of the teams.
 export type NeatQueueOutcome =
   | { status: "pending" }
@@ -155,19 +183,44 @@ export type NeatQueueOutcome =
       // Index into the match's teams array, matching NeatQueue's numbering.
       winningTeamIndex: number;
       teams: string[][];
+      players: NeatQueuePlayer[];
+      // Discord id of the voted MVP, when the lobby picked one.
+      mvpId: string | null;
     };
 
 // `winner` is a 0-based index into `teams` once a game is decided. A cancelled
 // match keeps its teams and start time but reports -1; a queue that died before
 // teams were made has no time or teams at all and reports null. Neither will
 // ever produce a winner, so both refund.
+function matchPlayers(match: Record<string, any>): NeatQueuePlayer[] {
+  if (!Array.isArray(match.teams)) return [];
+
+  const players: NeatQueuePlayer[] = [];
+  match.teams.forEach((team: unknown, teamIndex: number) => {
+    if (!Array.isArray(team)) return;
+    for (const player of team as Array<Record<string, any>>) {
+      players.push({
+        id: String(player?.id ?? ""),
+        name: player?.name ?? "",
+        teamIndex,
+        mmrChange:
+          typeof player?.mmr_change === "number" ? player.mmr_change : null,
+      });
+    }
+  });
+  return players;
+}
+
 function outcomeOf(match: Record<string, any>): NeatQueueOutcome {
   const winner = match.winner;
   if (typeof winner === "number" && winner >= 0) {
+    const mvp = match.mvp?.selected;
     return {
       status: "finished",
       winningTeamIndex: winner,
       teams: teamRosters(match),
+      players: matchPlayers(match),
+      mvpId: typeof mvp === "string" && mvp ? mvp : null,
     };
   }
   return { status: "cancelled" };

@@ -25,6 +25,7 @@ import {
   type BettingRound,
 } from "./betting.ts";
 import {
+  addMatchSummary,
   buildRefundEmbed,
   buildResultEmbed,
   buildRoundEmbed,
@@ -80,6 +81,7 @@ async function openRoundFor(
     guildId,
     gameNumber: match.gameNumber,
     teamRosters: match.teams,
+    teamMmr: match.teamMmr,
     autoLockAt: new Date(now.getTime() + BETTING_WINDOW_MS),
   });
 
@@ -223,8 +225,12 @@ async function resolveRound(
     `settled game #${round.gameNumber}: ${winner} won, pool ${settled.totalPool}`,
   );
 
+  const summary = addMatchSummary(
+    buildResultEmbed(round, winner, settled),
+    outcome,
+  );
   const channel = await textChannel(client, round.channelId);
-  await channel?.send({ embeds: [buildResultEmbed(round, winner, settled)] });
+  await channel?.send({ embeds: [summary] });
 }
 
 // Watching starts when a queue is one player from popping and continues until

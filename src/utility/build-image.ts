@@ -5,7 +5,7 @@
 
 import { createCanvas, loadImage, type Image } from "@napi-rs/canvas";
 import { formatRate, type ChampionBuild } from "./opgg.ts";
-import { itemIconUrl } from "./riot.ts";
+import { getRuneIcons, itemIconUrl } from "./riot.ts";
 import { logError } from "./log.ts";
 
 const ICON_SIZE = 56;
@@ -22,31 +22,37 @@ const WIN_RATE_COLOR = "#f2f3f5";
 
 // Data Dragon item icons never change for a given id, so one fetch per item per
 // process lifetime is enough.
-const iconCache = new Map<number, Promise<Image | null>>();
+const iconCache = new Map<string, Promise<Image | null>>();
 
-function loadItemIcon(itemId: number): Promise<Image | null> {
-  const cached = iconCache.get(itemId);
+function loadIcon(url: string, describedAs: string): Promise<Image | null> {
+  const cached = iconCache.get(url);
   if (cached) return cached;
 
   const pending = (async () => {
-    const response = await fetch(await itemIconUrl(itemId));
-    if (!response.ok) {
-      throw new Error(`Data Dragon has no icon for item ${itemId}`);
-    }
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Data Dragon has no ${describedAs}`);
     return loadImage(Buffer.from(await response.arrayBuffer()));
   })().catch((err) => {
-    logError("champ", `item icon ${itemId} failed to load:`, err);
-    iconCache.delete(itemId);
+    logError("champ", `${describedAs} failed to load:`, err);
+    iconCache.delete(url);
     return null;
   });
 
-  iconCache.set(itemId, pending);
+  iconCache.set(url, pending);
   return pending;
+}
+
+async function loadItemIcon(itemId: number): Promise<Image | null> {
+  return loadIcon(await itemIconUrl(itemId), `item icon ${itemId}`);
 }
 
 interface BuildStage {
   label: string;
   itemIds: number[];
+  // Rune icons come from Data Dragon by name rather than by item id.
+  runeNames?: string[];
+  // Drawn in place of icons, for a row that has nothing to picture.
+  text?: string;
   // Null for the late row, whose items each come from a different slot and so
   // share no single win rate.
   winRate: number | null;
@@ -83,27 +89,65 @@ function buildStages(build: ChampionBuild): BuildStage[] {
     stages.push({ label: "LATE", itemIds: situationalIds, winRate: null });
   }
 
-  return stages.filter((stage) => stage.itemIds.length > 0);
+  if (build.runes) {
+    stages.push({
+      label: "RUNES",
+      itemIds: [],
+      runeNames: [
+        build.runes.primaryRunes[0] ?? build.runes.primaryPage,
+        ...build.runes.primaryRunes.slice(1),
+        ...build.runes.secondaryRunes,
+      ].filter(Boolean),
+      winRate: build.runes.winRate,
+    });
+  }
+
+  if (build.skillOrder) {
+    stages.push({
+      label: "SKILLS",
+      itemIds: [],
+      text: build.skillOrder.skills.join("  >  "),
+      winRate: build.skillOrder.winRate,
+    });
+  }
+
+  return stages.filter(
+    (stage) => stage.itemIds.length > 0 || stage.runeNames?.length || stage.text,
+  );
 }
 
 interface DrawableStage {
   label: string;
   icons: Image[];
+  text?: string;
   winRate: number | null;
+}
+
+async function loadRuneIcons(runeNames: string[]): Promise<Array<Image | null>> {
+  const iconUrls = await getRuneIcons().catch(() => new Map<string, string>());
+  return Promise.all(
+    runeNames.map((name) => {
+      const url = iconUrls.get(name);
+      return url ? loadIcon(url, `rune ${name}`) : Promise.resolve(null);
+    }),
+  );
 }
 
 async function loadStageIcons(stages: BuildStage[]): Promise<DrawableStage[]> {
   const drawable = await Promise.all(
     stages.map(async (stage) => {
-      const icons = await Promise.all(stage.itemIds.map(loadItemIcon));
+      const loaded = stage.runeNames
+        ? await loadRuneIcons(stage.runeNames)
+        : await Promise.all(stage.itemIds.map(loadItemIcon));
       return {
         label: stage.label,
-        icons: icons.filter((icon): icon is Image => icon !== null),
+        icons: loaded.filter((icon): icon is Image => icon !== null),
+        text: stage.text,
         winRate: stage.winRate,
       };
     }),
   );
-  return drawable.filter((stage) => stage.icons.length > 0);
+  return drawable.filter((stage) => stage.icons.length > 0 || stage.text);
 }
 
 // Null when nothing could be drawn, so the caller can fall back to the
@@ -141,6 +185,10 @@ export async function renderBuildImage(
     context.fillText(stage.label, PADDING, y + ICON_SIZE / 2);
 
     let x = PADDING + LABEL_COLUMN_WIDTH;
+    if (stage.text) {
+      context.fillStyle = WIN_RATE_COLOR;
+      context.fillText(stage.text, x, y + ICON_SIZE / 2);
+    }
     for (const icon of stage.icons) {
       context.drawImage(icon, x, y, ICON_SIZE, ICON_SIZE);
       x += ICON_SIZE + ICON_GAP;

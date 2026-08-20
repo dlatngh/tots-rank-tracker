@@ -6,7 +6,7 @@ import {
   Partials,
 } from "discord.js";
 import { config } from "./src/utility/config.ts";
-import { commands } from "./src/commands/index.ts";
+import { commands, contextMenuCommands } from "./src/commands/index.ts";
 import { registerCommands } from "./src/utility/deploy-commands.ts";
 import { startDailySnapshotScheduler } from "./src/utility/rank-history.ts";
 import { startPatchWebhook } from "./src/utility/patch-webhook.ts";
@@ -91,6 +91,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
         "cmd",
         `/${interaction.commandName} has no autocomplete handler`,
       );
+    }
+    return;
+  }
+
+  if (interaction.isMessageContextMenuCommand()) {
+    const command = Object.values(contextMenuCommands).find(
+      (candidate) => candidate.data.name === interaction.commandName,
+    );
+    if (!command) return;
+
+    const started = Date.now();
+    log(
+      "cmd",
+      `${interaction.commandName} on ${interaction.targetId} by ${interaction.user.tag}`,
+    );
+    try {
+      await command.execute(interaction);
+      log("cmd", `${interaction.commandName} done (${Date.now() - started}ms)`);
+    } catch (err) {
+      if (isExpiredInteraction(err)) {
+        logError("cmd", `${interaction.commandName} expired before it could be acknowledged`);
+        return;
+      }
+      logError("cmd", `Error in ${interaction.commandName}:`, err);
+      await interaction
+        .editReply("I cant do it my sodium is too high.")
+        .catch(() => {});
     }
     return;
   }

@@ -43,6 +43,9 @@ export interface BettingRound {
   // Player names per team as NeatQueue reported them, in its team order, so
   // team1/team2 here mean the same sides NeatQueue shows.
   teamRosters: string[][];
+  // Mean NeatQueue MMR per team when it was known at kick-off, which is what
+  // the round shows as odds.
+  teamMmr: Array<number | null>;
   // When the round should stop taking bets on its own. Set on rounds the bot
   // opened itself, since no one is around to run `/bet lock` for those.
   autoLockAt: string | null;
@@ -51,6 +54,19 @@ export interface BettingRound {
 interface Account {
   balance: number;
   lastRefillAt: string | null;
+  wins: number;
+  losses: number;
+  biggestWin: number;
+  // Positive for a run of wins, negative for a run of losses.
+  streak: number;
+}
+
+export interface BettorRecord {
+  balance: number;
+  wins: number;
+  losses: number;
+  biggestWin: number;
+  streak: number;
 }
 
 interface BettingStore {
@@ -102,7 +118,14 @@ function accountFor(store: BettingStore, discordId: string): Account {
   const existing = store.accounts[discordId];
   if (existing) return existing;
 
-  const opened: Account = { balance: STARTING_BALANCE, lastRefillAt: null };
+  const opened: Account = {
+    balance: STARTING_BALANCE,
+    lastRefillAt: null,
+    wins: 0,
+    losses: 0,
+    biggestWin: 0,
+    streak: 0,
+  };
   store.accounts[discordId] = opened;
   return opened;
 }
@@ -112,12 +135,36 @@ export async function getBalance(discordId: string): Promise<number> {
   return store.accounts[discordId]?.balance ?? STARTING_BALANCE;
 }
 
+function recordOf(account: Account): BettorRecord {
+  return {
+    balance: account.balance,
+    wins: account.wins ?? 0,
+    losses: account.losses ?? 0,
+    biggestWin: account.biggestWin ?? 0,
+    streak: account.streak ?? 0,
+  };
+}
+
+export async function getRecord(discordId: string): Promise<BettorRecord> {
+  const store = await read();
+  const account = store.accounts[discordId];
+  return account
+    ? recordOf(account)
+    : {
+        balance: STARTING_BALANCE,
+        wins: 0,
+        losses: 0,
+        biggestWin: 0,
+        streak: 0,
+      };
+}
+
 export async function getLeaderboard(): Promise<
-  Array<{ discordId: string; balance: number }>
+  Array<{ discordId: string } & BettorRecord>
 > {
   const store = await read();
   const standings = Object.entries(store.accounts).map(
-    ([discordId, account]) => ({ discordId, balance: account.balance }),
+    ([discordId, account]) => ({ discordId, ...recordOf(account) }),
   );
   standings.sort((a, b) => b.balance - a.balance);
   return standings;
@@ -163,6 +210,7 @@ export interface RoundSetup {
   guildId: string;
   gameNumber: number;
   teamRosters: string[][];
+  teamMmr?: Array<number | null>;
   autoLockAt?: Date;
 }
 
@@ -196,6 +244,7 @@ export async function startRound(
       wagers: {},
       gameNumber: setup.gameNumber,
       teamRosters: setup.teamRosters,
+      teamMmr: setup.teamMmr ?? [],
       autoLockAt: setup.autoLockAt?.toISOString() ?? null,
     };
     store.rounds[channelId] = round;
@@ -343,6 +392,21 @@ function settle(round: BettingRound, winner: BetTeam): RoundResult {
   return { winner, totalPool, payouts, refunded: false };
 }
 
+// A refunded round is not a result: nobody won or lost it, so records only
+// move when tots actually changed hands.
+function recordResult(account: Account, profit: number): void {
+  if (profit > 0) {
+    account.wins += 1;
+    account.streak = account.streak > 0 ? account.streak + 1 : 1;
+    account.biggestWin = Math.max(account.biggestWin, profit);
+    return;
+  }
+  if (profit < 0) {
+    account.losses += 1;
+    account.streak = account.streak < 0 ? account.streak - 1 : -1;
+  }
+}
+
 function payAndClose(
   store: BettingStore,
   round: BettingRound,
@@ -350,7 +414,11 @@ function payAndClose(
 ): RoundResult {
   const result = settle(round, winner);
   for (const payout of result.payouts) {
-    accountFor(store, payout.discordId).balance += payout.returned;
+    const account = accountFor(store, payout.discordId);
+    account.balance += payout.returned;
+    if (!result.refunded) {
+      recordResult(account, payout.returned - payout.stake);
+    }
   }
   delete store.rounds[round.channelId];
   return result;
