@@ -26,6 +26,37 @@ export const LANE_CHOICES: Array<{ name: string; value: LanePosition }> = [
   { name: "Support", value: "support" },
 ];
 
+// OP.GG accepts a longer list of tiers (every individual rank plus the "_plus"
+// cutoffs); these are the ones worth offering as slash command choices.
+export type RankTier =
+  | "all"
+  | "gold_plus"
+  | "platinum_plus"
+  | "emerald_plus"
+  | "diamond_plus"
+  | "master_plus"
+  | "challenger";
+
+// Emerald+ is OP.GG's own default view: high enough that the builds reflect
+// deliberate play, low enough to have a large sample.
+export const DEFAULT_RANK_TIER: RankTier = "emerald_plus";
+
+// The "+" brackets are floors: they cover that rank and every rank above it.
+export const RANK_TIER_CHOICES: Array<{ name: string; value: RankTier }> = [
+  { name: "Emerald+", value: "emerald_plus" },
+  { name: "All ranks", value: "all" },
+  { name: "Gold+", value: "gold_plus" },
+  { name: "Platinum+", value: "platinum_plus" },
+  { name: "Diamond+", value: "diamond_plus" },
+  { name: "Master+", value: "master_plus" },
+  { name: "Challenger", value: "challenger" },
+];
+
+export function rankTierLabel(tier: RankTier): string {
+  const choice = RANK_TIER_CHOICES.find((candidate) => candidate.value === tier);
+  return choice?.name ?? tier;
+}
+
 // OP.GG returns lane names upper-cased ("MID"); render them the way the slash
 // command choices present them.
 export function laneLabel(lane: string): string {
@@ -308,6 +339,24 @@ export interface CounterMatchup {
   games: number;
 }
 
+// One recommended purchase step: the items bought together at that stage of
+// the build, with how the champion performs when built that way.
+export interface ItemSet {
+  itemIds: number[];
+  itemNames: string[];
+  games: number;
+  winRate: number;
+  pickRate: number;
+}
+
+export interface ChampionBuild {
+  starterItems: ItemSet | null;
+  boots: ItemSet | null;
+  coreItems: ItemSet | null;
+  // Most popular single item at each of the fourth, fifth, and sixth slots.
+  situationalItems: ItemSet[];
+}
+
 export interface ChampionRates {
   games: number;
   winRate: number;
@@ -333,6 +382,8 @@ export interface ChampionMetaStats {
   selectedLane: LaneRates | null;
   strongAgainst: CounterMatchup[];
   weakAgainst: CounterMatchup[];
+  // Also lane-specific: OP.GG computes builds per position.
+  build: ChampionBuild;
 }
 
 interface AverageStats {
@@ -345,14 +396,80 @@ interface AverageStats {
   rank: number;
 }
 
+// OP.GG's rates keep moving inside a patch as games pile up, quickest in the
+// days right after it ships, so results expire on a timer rather than lasting
+// the whole patch. A response reporting a newer patch drops everything cached
+// under the old one, since those numbers describe a game that no longer exists.
+const META_CACHE_TTL_MS = 60 * 60 * 1000;
+
+interface CachedMeta {
+  value: unknown;
+  expiresAt: number;
+}
+
+const metaCache = new Map<string, CachedMeta>();
+let cachedPatch = "";
+
+function readCached<T>(key: string): T | null {
+  const entry = metaCache.get(key);
+  if (!entry) return null;
+  if (Date.now() >= entry.expiresAt) {
+    metaCache.delete(key);
+    return null;
+  }
+  log("opgg", `cache hit ${key}`);
+  return entry.value as T;
+}
+
+function writeCached(key: string, value: unknown): void {
+  metaCache.set(key, { value, expiresAt: Date.now() + META_CACHE_TTL_MS });
+}
+
+function isNewerPatch(patch: string, than: string): boolean {
+  const segments = patch.split(".").map(Number);
+  const priorSegments = than.split(".").map(Number);
+
+  for (let index = 0; index < Math.max(segments.length, priorSegments.length); index += 1) {
+    const segment = segments[index] ?? 0;
+    const prior = priorSegments[index] ?? 0;
+    if (segment !== prior) return segment > prior;
+  }
+  return false;
+}
+
+// Thin brackets like Challenger lag behind on patch version because they take
+// longer to gather a sample, so an older version in a response says nothing
+// about the meta having moved on. Only a newer one invalidates.
+function dropCacheOnNewPatch(patch: string): void {
+  if (!patch || patch === cachedPatch) return;
+  if (!cachedPatch) {
+    cachedPatch = patch;
+    return;
+  }
+  if (!isNewerPatch(patch, cachedPatch)) return;
+
+  log("opgg", `patch ${cachedPatch} -> ${patch}; clearing meta cache`);
+  metaCache.clear();
+  cachedPatch = patch;
+}
+
 // `position` only selects which builds/counters the server computes; the
 // summary stats it returns are champion-wide, so any valid lane works as a
 // probe and the champion's real primary lane comes back in `positions`.
 const PROBE_LANE: LanePosition = "mid";
 
-const COUNTER_FIELDS = [
+// Matchups and builds are both computed for the queried position only, so they
+// come from the same call and have to be refetched together when the queried
+// lane turns out not to be the champion's main one.
+const LANE_SPECIFIC_FIELDS = [
   "data.strong_counters[].{champion_name,my_win_rate,play}",
   "data.weak_counters[].{champion_name,my_win_rate,play}",
+  "data.starter_items.{ids[],ids_names[],pick_rate,play,win}",
+  "data.boots.{ids[],ids_names[],pick_rate,play,win}",
+  "data.core_items.{ids[],ids_names[],pick_rate,play,win}",
+  "data.fourth_items[].{ids[],ids_names[],pick_rate,play,win}",
+  "data.fifth_items[].{ids[],ids_names[],pick_rate,play,win}",
+  "data.sixth_items[].{ids[],ids_names[],pick_rate,play,win}",
 ];
 
 function decodeCounters(raw: unknown): CounterMatchup[] {
@@ -364,35 +481,94 @@ function decodeCounters(raw: unknown): CounterMatchup[] {
   }));
 }
 
+function decodeItemSet(raw: unknown): ItemSet | null {
+  const entry = raw as Record<string, any> | null | undefined;
+  const itemNames = entry?.ids_names as string[] | undefined;
+  if (!entry || !itemNames?.length || !entry.play) return null;
+  return {
+    itemIds: (entry.ids ?? []) as number[],
+    itemNames,
+    games: entry.play,
+    winRate: entry.win / entry.play,
+    pickRate: entry.pick_rate,
+  };
+}
+
+// OP.GG orders the alternatives for a slot by popularity. The top pick often
+// repeats across the late slots (the same item is the most common fifth and
+// sixth buy), so skip anything already claimed by an earlier slot and take the
+// next alternative instead.
+function decodeMostBuiltItem(raw: unknown, takenItemIds: Set<number>): ItemSet | null {
+  const alternatives = (raw ?? []) as unknown[];
+  for (const alternative of alternatives) {
+    const items = decodeItemSet(alternative);
+    if (!items) continue;
+    if (items.itemIds.some((itemId) => takenItemIds.has(itemId))) continue;
+    return items;
+  }
+  return null;
+}
+
+function decodeBuild(source: any): ChampionBuild {
+  const situationalSlots = [
+    source?.data?.fourth_items,
+    source?.data?.fifth_items,
+    source?.data?.sixth_items,
+  ];
+  const situationalItems: ItemSet[] = [];
+  const takenItemIds = new Set<number>();
+  for (const slot of situationalSlots) {
+    const mostBuilt = decodeMostBuiltItem(slot, takenItemIds);
+    if (!mostBuilt) continue;
+    situationalItems.push(mostBuilt);
+    for (const itemId of mostBuilt.itemIds) takenItemIds.add(itemId);
+  }
+
+  return {
+    starterItems: decodeItemSet(source?.data?.starter_items),
+    boots: decodeItemSet(source?.data?.boots),
+    coreItems: decodeItemSet(source?.data?.core_items),
+    situationalItems,
+  };
+}
+
 async function analyzeChampion(
   opggName: string,
   lane: LanePosition,
+  tier: RankTier,
   fields: string[],
 ): Promise<any> {
   const payload = await callTool("lol_get_champion_analysis", {
     champion: opggName,
     position: lane,
     game_mode: "ranked",
+    tier,
     desired_output_fields: fields,
   });
   return decodeCompactPayload(payload);
 }
 
 // `lane` narrows the matchup data and lane rates to that lane; omit it to use
-// whichever lane the champion is most played in.
+// whichever lane the champion is most played in. `tier` restricts every stat to
+// games played at that rank and above.
 export async function getChampionMetaStats(
   displayName: string,
   lane?: LanePosition,
+  tier: RankTier = DEFAULT_RANK_TIER,
 ): Promise<ChampionMetaStats | null> {
   const opggName = toOpggChampionName(displayName);
+  const cacheKey = `champ:${opggName}:${lane ?? "auto"}:${tier}`;
+  const cached = readCached<ChampionMetaStats>(cacheKey);
+  if (cached) return cached;
+
   const queryLane = lane ?? PROBE_LANE;
-  const decoded = await analyzeChampion(opggName, queryLane, [
+  const decoded = await analyzeChampion(opggName, queryLane, tier, [
     "data.summary.average_stats.{play,win_rate,pick_rate,ban_rate,kda,tier,rank}",
     "data.summary.positions[].name",
     "data.summary.positions[].stats.{play,win_rate,pick_rate,role_rate,ban_rate,kda}",
     "data.summary.positions[].stats.tier_data.{tier,rank}",
     "data.trends.win.version",
-    ...COUNTER_FIELDS,
+    ...LANE_SPECIFIC_FIELDS,
   ]);
 
   const averageStats = decoded?.data?.summary?.average_stats as
@@ -414,23 +590,27 @@ export async function getChampionMetaStats(
 
   // Matchups are only computed for the lane queried, so a champion whose main
   // lane is not the probe lane needs a second call to get its counters.
-  let counterSource = decoded;
+  let laneSpecificSource = decoded;
   const needsPrimaryLaneCall =
     !lane && selectedLane && selectedLane.lane !== queryLane;
   if (needsPrimaryLaneCall) {
     log(
       "opgg",
-      `${opggName}: probed ${queryLane} but main lane is ${selectedLane.lane}; refetching matchups`,
+      `${opggName}: probed ${queryLane} but main lane is ${selectedLane.lane}; refetching matchups and build`,
     );
-    counterSource = await analyzeChampion(
+    laneSpecificSource = await analyzeChampion(
       opggName,
       selectedLane.lane,
-      COUNTER_FIELDS,
+      tier,
+      LANE_SPECIFIC_FIELDS,
     );
   }
 
-  return {
-    patch: decoded?.data?.trends?.win?.version ?? "current patch",
+  const patch = decoded?.data?.trends?.win?.version ?? "current patch";
+  dropCacheOnNewPatch(patch);
+
+  const stats: ChampionMetaStats = {
+    patch,
     overall: {
       games: averageStats.play,
       winRate: averageStats.win_rate,
@@ -442,9 +622,13 @@ export async function getChampionMetaStats(
     },
     lanes,
     selectedLane,
-    strongAgainst: decodeCounters(counterSource?.data?.strong_counters),
-    weakAgainst: decodeCounters(counterSource?.data?.weak_counters),
+    strongAgainst: decodeCounters(laneSpecificSource?.data?.strong_counters),
+    weakAgainst: decodeCounters(laneSpecificSource?.data?.weak_counters),
+    build: decodeBuild(laneSpecificSource),
   };
+
+  writeCached(cacheKey, stats);
+  return stats;
 }
 
 function decodeLanes(raw: unknown): LaneRates[] {
@@ -482,6 +666,10 @@ export interface LaneMetaEntry {
 export async function getLaneMeta(
   lane: LanePosition,
 ): Promise<LaneMetaEntry[]> {
+  const cacheKey = `lane:${lane}`;
+  const cached = readCached<LaneMetaEntry[]>(cacheKey);
+  if (cached) return cached;
+
   const payload = await callTool("lol_list_lane_meta_champions", {
     position: lane,
     desired_output_fields: [
@@ -496,7 +684,7 @@ export async function getLaneMeta(
 
   log("opgg", `${lane} meta: ${entries.length} champion(s)`);
 
-  return entries.map((entry) => ({
+  const meta = entries.map((entry) => ({
     champion: entry.champion,
     winRate: entry.win_rate,
     pickRate: entry.pick_rate,
@@ -505,6 +693,9 @@ export async function getLaneMeta(
     tier: entry.tier,
     rank: entry.rank,
   }));
+
+  writeCached(cacheKey, meta);
+  return meta;
 }
 
 // -- Esports schedules ------------------------------------------------------

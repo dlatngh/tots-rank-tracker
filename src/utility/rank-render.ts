@@ -122,18 +122,7 @@ function formatDuoLine(record: DuoRecord): string {
   return `**${record.label}** - ${record.games} ${gameLabel}, ${winRate}% win`;
 }
 
-export interface RankPayloadOptions {
-  // OP.GG's profile snapshot can lag Riot by a while, so the Refresh button
-  // skips it and shows only data pulled live from Riot this instant.
-  includeOpggProfile?: boolean;
-}
-
-export async function buildRankPayload(
-  user: User,
-  game: Game,
-  options: RankPayloadOptions = {},
-) {
-  const includeOpggProfile = options.includeOpggProfile ?? true;
+export async function buildRankPayload(user: User, game: Game) {
   const discordId = user.id;
   const registration = await getRegistration(discordId);
   if (!registration) {
@@ -154,7 +143,6 @@ export async function buildRankPayload(
   // Supplementary OP.GG data. It is additive, so a failure just means those
   // fields are omitted rather than the whole embed failing.
   const profilePromise: Promise<SummonerProfile | null> =
-    includeOpggProfile &&
     game === "lol" &&
     registration.gameName &&
     registration.tagLine
@@ -336,7 +324,5 @@ export async function handleRankRefresh(
   if (reg) invalidateRank(reg.puuid, game);
 
   const user = await interaction.client.users.fetch(discordId);
-  await interaction.editReply(
-    await buildRankPayload(user, game, { includeOpggProfile: false }),
-  );
+  await interaction.editReply(await buildRankPayload(user, game));
 }

@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   EmbedBuilder,
@@ -13,14 +14,19 @@ import type {
   ChampionRates,
   CounterMatchup,
   LanePosition,
+  RankTier,
 } from "../utility/opgg.ts";
 import {
+  DEFAULT_RANK_TIER,
   formatRate,
   getChampionMetaStats,
   laneLabel,
   LANE_CHOICES,
+  RANK_TIER_CHOICES,
+  rankTierLabel,
   tierGrade,
 } from "../utility/opgg.ts";
+import { renderBuildImage } from "../utility/build-image.ts";
 import { log } from "../utility/log.ts";
 
 export const data = new SlashCommandBuilder()
@@ -40,6 +46,14 @@ export const data = new SlashCommandBuilder()
         "Lane to show matchups for. Defaults to the champion's main lane.",
       )
       .addChoices(...LANE_CHOICES),
+  )
+  .addStringOption((opt) =>
+    opt
+      .setName("rank")
+      .setDescription(
+        "Rank floor for the stats: a \"+\" bracket includes every rank above it. Default: Emerald+.",
+      )
+      .addChoices(...RANK_TIER_CHOICES),
   );
 
 export async function autocomplete(interaction: AutocompleteInteraction) {
@@ -70,6 +84,8 @@ function formatMatchups(matchups: CounterMatchup[]): string {
     .join("\n");
 }
 
+const BUILD_IMAGE_NAME = "build.png";
+
 export async function execute(interaction: ChatInputCommandInteraction) {
   await interaction.deferReply();
 
@@ -87,10 +103,17 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   }
 
   const lane = interaction.options.getString("lane") as LanePosition | null;
-  const stats = await getChampionMetaStats(champion.name, lane ?? undefined);
+  const rankTier =
+    (interaction.options.getString("rank") as RankTier | null) ??
+    DEFAULT_RANK_TIER;
+  const stats = await getChampionMetaStats(
+    champion.name,
+    lane ?? undefined,
+    rankTier,
+  );
   if (!stats) {
     await interaction.editReply(
-      `OP.GG has no stats for **${champion.name}** right now.`,
+      `OP.GG has no ${rankTierLabel(rankTier)} stats for **${champion.name}** right now.`,
     );
     return;
   }
@@ -104,6 +127,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   log(
     "cmd",
     `/champ ${champion.name}: lane ${lane ?? "auto"} -> ${displayedLane}, ` +
+      `rank ${rankTier}, ` +
       `${stats.lanes.length} lane(s) with data, ` +
       `${stats.strongAgainst.length + stats.weakAgainst.length} matchup(s)`,
   );
@@ -129,7 +153,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         inline: true,
       },
     )
-    .setFooter({ text: "Ranked solo queue - source: OP.GG" });
+    .setFooter({
+      text: `Ranked solo queue · ${rankTierLabel(rankTier)} · source: OP.GG`,
+    });
 
   if (stats.selectedLane) {
     embed.addFields({
@@ -164,5 +190,15 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
-  await interaction.editReply({ embeds: [embed] });
+  const buildImage = await renderBuildImage(stats.build);
+  if (!buildImage) {
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  const buildAttachment = new AttachmentBuilder(buildImage, {
+    name: BUILD_IMAGE_NAME,
+  });
+  embed.setImage(`attachment://${BUILD_IMAGE_NAME}`);
+  await interaction.editReply({ embeds: [embed], files: [buildAttachment] });
 }

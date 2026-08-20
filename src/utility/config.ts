@@ -35,6 +35,13 @@ export const config = {
   alertChannelId: process.env.ALERT_CHANNEL_ID ?? "",
   // Optional: user pinged on a patch-watcher crash alert so an operator sees it.
   alertMentionUserId: process.env.ALERT_MENTION_USER_ID ?? "",
+  // Optional: channel `/quote` posts saved quotes to. Unset disables the
+  // command rather than guessing at a channel.
+  quotesChannelId: process.env.QUOTES_CHANNEL_ID ?? "",
+  // Optional: NeatQueue API token from its `/webhooks generatetoken` command.
+  // Betting reads game rosters and results without it where NeatQueue allows
+  // anonymous reads; set it if those calls start coming back unauthorized.
+  neatQueueApiToken: process.env.NEATQUEUE_API_TOKEN ?? "",
 };
 
 // Region routing (NA). See https://developer.riotgames.com/docs/lol#routing-values

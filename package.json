@@ -18,6 +18,9 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "discord.js": "^14.26.4"
+    "@napi-rs/canvas": "^1.0.7",
+    "discord.js": "^14.26.4",
+    "gifenc": "^1.0.3",
+    "gifuct-js": "^2.1.2"
   }
 }

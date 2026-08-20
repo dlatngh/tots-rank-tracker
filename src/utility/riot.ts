@@ -239,6 +239,11 @@ export async function championIconUrl(championId: string): Promise<string> {
   return `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${championId}.png`;
 }
 
+export async function itemIconUrl(itemId: number): Promise<string> {
+  const version = await ddragonVersion();
+  return `https://ddragon.leagueoflegends.com/cdn/${version}/img/item/${itemId}.png`;
+}
+
 // Collapse a champion name to a comparison key so patch-note headings match the
 // roster regardless of punctuation/spacing (e.g. "Nunu & Willump", "Kai'Sa").
 export function normalizeChampionName(name: string): string {
@@ -320,9 +325,10 @@ interface MatchV5Response {
   };
 }
 
-// Match history is fetched separately from rank and kept in a lightweight
-// in-memory cache (no disk persistence — it's cheap to refetch on restart).
-// Cleared alongside the LoL rank when a user hits Refresh.
+// Match history is fetched separately from rank and cached until the player
+// hits Refresh. One fetch costs 16 Riot calls, so the cache is written to disk
+// as well: a restart would otherwise re-pull every player's history the next
+// time someone runs /lol.
 const matchCache = new Map<string, Promise<MatchSummary[]>>();
 // Last successful fetch per player. A refresh clears the cache above and
 // refetches ~31 calls, which can trip Riot's rate limit; without this the
@@ -376,7 +382,55 @@ async function fetchMatchHistory(puuid: string): Promise<MatchSummary[]> {
   return summaries;
 }
 
-export function getMatchHistory(puuid: string): Promise<MatchSummary[]> {
+const MATCH_CACHE_FILE = resolve(process.cwd(), "data", "match-cache.json");
+let matchCacheLoadPromise: Promise<void> | null = null;
+let matchCacheWriteQueue: Promise<void> = Promise.resolve();
+
+function loadMatchCacheFromDisk(): Promise<void> {
+  if (!matchCacheLoadPromise) {
+    matchCacheLoadPromise = (async () => {
+      try {
+        const raw = await readFile(MATCH_CACHE_FILE, "utf8");
+        const data = JSON.parse(raw) as Record<string, MatchSummary[]>;
+        for (const [puuid, matches] of Object.entries(data)) {
+          matchCache.set(puuid, Promise.resolve(matches));
+          lastGoodMatches.set(puuid, matches);
+        }
+        log("cache", `loaded ${matchCache.size} match histories from disk`);
+      } catch (err: any) {
+        if (err?.code !== "ENOENT") {
+          logError("cache", "failed to load match history from disk:", err);
+        }
+      }
+    })();
+  }
+  return matchCacheLoadPromise;
+}
+
+function scheduleMatchCacheFlush(): void {
+  matchCacheWriteQueue = matchCacheWriteQueue.then(async () => {
+    const snapshot: Record<string, MatchSummary[]> = {};
+    await Promise.all(
+      Array.from(matchCache.entries()).map(async ([puuid, promise]) => {
+        try {
+          snapshot[puuid] = await promise;
+        } catch {
+          // Skip rejected entries.
+        }
+      }),
+    );
+    try {
+      await mkdir(dirname(MATCH_CACHE_FILE), { recursive: true });
+      await writeFile(MATCH_CACHE_FILE, JSON.stringify(snapshot), "utf8");
+    } catch (err) {
+      logError("cache", "failed to write match history to disk:", err);
+    }
+  });
+}
+
+export async function getMatchHistory(puuid: string): Promise<MatchSummary[]> {
+  await loadMatchCacheFromDisk();
+
   const short = `matches:${puuid.slice(0, 8)}`;
   const cached = matchCache.get(puuid);
   if (cached) {
@@ -396,7 +450,10 @@ export function getMatchHistory(puuid: string): Promise<MatchSummary[]> {
   matchCache.set(puuid, withFallback);
 
   promise.then(
-    (matches) => lastGoodMatches.set(puuid, matches),
+    (matches) => {
+      lastGoodMatches.set(puuid, matches);
+      scheduleMatchCacheFlush();
+    },
     () => {
       log("cache", `evicting ${short} after failed fetch`);
       matchCache.delete(puuid);
@@ -408,6 +465,7 @@ export function getMatchHistory(puuid: string): Promise<MatchSummary[]> {
 export function invalidateMatchHistory(puuid: string): void {
   if (matchCache.delete(puuid)) {
     log("cache", `invalidated matches:${puuid.slice(0, 8)}`);
+    scheduleMatchCacheFlush();
   }
 }
 

@@ -1,12 +1,29 @@
-import { Client, Events, GatewayIntentBits, MessageFlags } from "discord.js";
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  MessageFlags,
+  Partials,
+} from "discord.js";
 import { config } from "./src/utility/config.ts";
 import { commands } from "./src/commands/index.ts";
 import { registerCommands } from "./src/utility/deploy-commands.ts";
 import { startDailySnapshotScheduler } from "./src/utility/rank-history.ts";
 import { startPatchWebhook } from "./src/utility/patch-webhook.ts";
+import {
+  handleChannelCreate,
+  handleQueueMessage,
+  startBetSync,
+} from "./src/utility/bet-sync.ts";
 import { log, logError } from "./src/utility/log.ts";
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// GuildMessages plus the Message partial let the bot see NeatQueue's queue
+// message being edited. Its embeds are stripped from the event unless the
+// Message Content intent is enabled, so the handler refetches over REST.
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  partials: [Partials.Message, Partials.Channel],
+});
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`Ready! Logged in as ${c.user.tag}`);
@@ -21,6 +38,7 @@ client.once(Events.ClientReady, async (c) => {
 
   startDailySnapshotScheduler();
   startPatchWebhook(c);
+  startBetSync(c);
 });
 
 // Discord discards an interaction token if it is not acknowledged within three
@@ -30,6 +48,27 @@ function isExpiredInteraction(err: unknown): boolean {
   return (
     typeof err === "object" && err !== null && (err as { code?: number }).code === 10062
   );
+}
+
+// NeatQueue creates a channel per game, named with the game number. The channel
+// appearing is the moment the game starts, and it is where the round is posted.
+client.on(Events.ChannelCreate, (channel) => {
+  handleChannelCreate(client, channel).catch((err) =>
+    logError("bet", "opening a round for a new match channel failed:", err),
+  );
+});
+
+// NeatQueue edits one sticky message as players join and leave its queue; that
+// edit is the earliest sign a game is about to start.
+for (const event of [Events.MessageCreate, Events.MessageUpdate] as const) {
+  client.on(event, (...args) => {
+    const message = args[args.length - 1] as Parameters<
+      typeof handleQueueMessage
+    >[0];
+    handleQueueMessage(message).catch((err) =>
+      logError("bet", "reading the queue message failed:", err),
+    );
+  });
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {

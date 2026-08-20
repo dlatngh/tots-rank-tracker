@@ -13,6 +13,8 @@ import * as unsubscribe from "./unsubscribe.ts";
 import * as subscriptions from "./subscriptions.ts";
 import * as champ from "./champ.ts";
 import * as lanemeta from "./lanemeta.ts";
+import * as bet from "./bet.ts";
+import * as quote from "./quote.ts";
 
 export const commands = {
   register,
@@ -30,4 +32,6 @@ export const commands = {
   subscriptions,
   champ,
   lanemeta,
+  bet,
+  quote,
 };
